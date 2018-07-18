@@ -67,44 +67,34 @@
   [node]
   (= datascript.parser.Placeholder (type node)))
 
-(defn alpha-clause?
-  [node]
-  (or
-    (predicate? node)
-    (pattern? node)))
+(defn =nth
+  [n x y]
+  (= x (nth y n)))
 
-(defn placeholder-eq
-  [s v]
-  (if (placeholder? v)
-    `true
-    `(= ~s ~(:value v))))
+(defn pattern-clause->pred
+  [pattern]
+  (let [p (:pattern pattern)
+        [e a v] p
+        [e' a' v'] (mapv :value p)]
+    (if (constant? e)
+      (if (constant? a)
+        (if (constant? v)
+          #(and (=nth 1 e' %) (=nth 2 a' %) (=nth 3 v' %))
+          #(and (=nth 1 e' %) (=nth 2 a' %)))
+        (if (constant? v)
+          #(and (=nth 1 e' %) (=nth 3 v' %))
+          #(=nth 1 e' %)))
+      (if (constant? a)
+        (if (constant? v)
+          #(and (=nth 2 a' %) (=nth 3 v' %))
+          #(=nth 2 a' %))
+        (if (constant? v)
+          #(=nth 3 v' %)
+          (constantly true))))))
 
-(defn alpha-clause->pred
-  [node]
-  (cond
-    (predicate? node)
-    (let [f (-> node :fn :symbol)
-          args (mapv #(or (:symbol %) (:value %)) (:args node))
-          params (->> node :args (filter variable?) (mapv :symbol))]
-      ;;; TODO - resolve function symbol
-      `(fn [~@params] (apply ~(resolve f) ~@args)))
-
-    (pattern? node)
-    (let [[e a v] (:pattern node)
-          e' (gensym 'e)
-          a' (gensym 'a)
-          v' (gensym 'v)]
-      (case (->> node :pattern (filter variable?) count)
-        0 `(fn [[~'_ ~e' ~a' ~v']] (and ~(placeholder-eq e' e) ~(placeholder-eq a' a) ~(placeholder-eq v' v)))
-
-        1 (cond
-            (variable? e) `(fn [[~'_ ~'_ ~a' ~v']] (and ~(placeholder-eq a' a) ~(placeholder-eq v' v)))
-            (variable? a) `(fn [[~'_ ~e' ~'_ ~v']] (and ~(placeholder-eq e' e) ~(placeholder-eq v' v)))
-            (variable? v) `(fn [[~'_ ~e' ~a' ~'_]] (and ~(placeholder-eq e' e) ~(placeholder-eq a' a))))
-        2 (cond
-            (constant? e) `(fn [[~'_ ~'e ~'_ ~'_]] ~(placeholder-eq e' e))
-            (constant? a) `(fn [[~'_ ~'_ ~'a ~'_]] ~(placeholder-eq a' a))
-            (constant? v) `(fn [[~'_ ~'_ ~'_ ~'v]] ~(placeholder-eq v' v)))))))
+(defn unparse-pattern
+  [{[e a v] :pattern}]
+  [(or (:symbol e) (:value e) '_) (or (:symbol a) (:value a) '_) (or (:symbol v) (:value v) '_)])
 
 (defn q->nodes
   [ast]
