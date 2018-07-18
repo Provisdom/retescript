@@ -1,0 +1,4 @@
+{:paths   ["src" "resources"]
+ :deps    {org.clojure/clojure {:mvn/version "1.9.0"}
+           datascript {:mvn/version "0.16.6"}}
+ :aliases {:test {:extra-paths ["test"]}}}
