@@ -96,7 +96,7 @@
      :where
      [?e :a 1]]
     =>
-    [[:db/add ?e :one true]]]
+    [[:db/add! ?e :one true]]]
 
    [::r2
     [:find ?e ?v
@@ -133,6 +133,7 @@
             rule (if (not-empty retracted-bindings)
                    (let [tx-data (set (->> retracted-bindings
                                            (mapcat (:activations rule))
+                                           (filter #(not= :db/add! (first %)))
                                            (map #(assoc % 0 :db/retract))))
                          activations (apply dissoc (:activations rule) retracted-bindings)]
                      (-> rule
