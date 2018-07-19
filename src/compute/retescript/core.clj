@@ -1,8 +1,10 @@
 (ns compute.retescript.core
   (:require [datascript.core :as d]
-            [datascript.parser :as p]
+            [datascript.parser :as dp]
             [datascript.query :as dq]
-            [clojure.walk :refer [postwalk]]))
+            [datascript.arrays :as da]
+            [clojure.set :as set])
+  (:import (datascript.query Context)))
 
 (def game-over-q
   '[:find [?move ...]
@@ -67,6 +69,10 @@
   [node]
   (= datascript.parser.Placeholder (type node)))
 
+(defn find-rel?
+  [node]
+  (= datascript.parser.FindRel (type node)))
+
 (defn =nth
   [n x y]
   (= x (nth y n)))
@@ -96,8 +102,93 @@
   [{[e a v] :pattern}]
   [(or (:symbol e) (:value e) '_) (or (:symbol a) (:value a) '_) (or (:symbol v) (:value v) '_)])
 
-(defn q->nodes
-  [ast]
-  (let [wh (:qwhere ast)
-        patterns (filter #(= datascript.parser.Pattern (type %)) wh)]))
+(defn compile-query
+  [query-def]
+  (let [[name query] query-def]
+    {:name name
+     :query `'~query
+     :query-ast (dp/parse-query query)
+     :facts #{}}))
+
+(defn compile-rule
+  [rule-def]
+  (let [[name query _ rhs] rule-def
+        cq (compile-query [name query])
+        preds (into {} (->> cq :query-ast :qwhere (map (fn [p] [`'~(unparse-pattern p) (pattern-clause->pred p)]))))
+        rhs-args (->> cq :query-ast :qfind :elements (map :symbol))
+        rhs-fn `(fn [~@rhs-args]
+                  ~rhs)]
+    (assoc cq :preds preds
+              :rhs-fn rhs-fn
+              :activations {})))
+
+(defmacro defrules
+  [name rules]
+  (let [cr (mapv compile-rule rules)]
+    `(def ~name
+       ~cr)))
+
+(defrules rs
+  [[::r1
+    [:find ?e
+     :where
+     [?e :a 1]]
+    =>
+    [[:db/add ?e :one true]]]
+
+   [::r2
+    [:find ?e ?v
+     :where
+     [?e :a ?v]
+     [?e :one true]]
+    =>
+    (println ?e ?v)]])
+
+(defn create-session
+  [& rulesets]
+  {:rules (vec (mapcat identity rulesets))
+   :pending-tx-data #{}})
+
+(defn run-rule
+  [fact rule]
+  (let [rule (dissoc rule :new-activations)
+        triggered? (loop [[[pattern pred] & preds] (:preds rule)]
+                     #_(println pattern fact ((or pred (constantly nil)) fact))
+                     (if (nil? pred)
+                       false
+                       (if (pred fact)
+                         true
+                         (recur preds))))]
+    (if triggered?
+      (let [update-fn (if (= :db/retract (first fact)) disj conj)
+            facts (update-fn (:facts rule) (vec (rest fact)))
+            bindings (d/q (:query rule) facts)
+            activations (into {} (map (juxt identity #(apply (:rhs-fn rule) %)) bindings))]
+        (if (not-empty bindings)
+          (-> rule
+              (assoc :facts facts)
+              (update :activations #(merge-with set/union %1 activations))
+              (assoc :new-activations activations))
+          (assoc rule :facts facts)))
+      rule)))
+
+
+(defn transact1
+  [session fact]
+  (let [rules (mapv (partial run-rule fact) (:rules session))]
+    (assoc session :rules rules)))
+
+(defn transact
+  [session tx-data]
+  (loop [session (reduce transact1 session tx-data)]
+    (let [tx-data (reduce #(set/union %1 (set (mapcat val (:new-activations %2))))
+                          #{}
+                          (:rules session))]
+      (if (not-empty tx-data)
+        (recur (reduce transact1 session tx-data))
+        session))))
+
+
+
+
 
