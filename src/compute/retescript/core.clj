@@ -159,15 +159,19 @@
                          true
                          (recur preds))))]
     (if triggered?
-      (let [update-fn (if (= :db/retract (first fact)) disj conj)
+      (let [op (first fact)
+            update-fn (if (= :db/retract op) disj conj)
             facts (update-fn (:facts rule) (vec (rest fact)))
             bindings (d/q (:query rule) facts)
-            activations (into {} (map (juxt identity #(apply (:rhs-fn rule) %)) bindings))]
+            activations (into {} (map (juxt identity #(apply (:rhs-fn rule) %)) bindings))
+            tx-data (if (= :db/retract op)
+                      ()
+                      (set (mapcat val activations)))]
         (if (not-empty bindings)
           (-> rule
               (assoc :facts facts)
               (update :activations #(merge-with set/union %1 activations))
-              (assoc :new-activations activations))
+              (assoc :tx-data tx-data))
           (assoc rule :facts facts)))
       rule)))
 
@@ -180,12 +184,13 @@
 (defn transact
   [session tx-data]
   (loop [session (reduce transact1 session tx-data)]
-    (let [tx-data (reduce #(set/union %1 (set (mapcat val (:new-activations %2))))
+    (let [tx-data (reduce set/union
                           #{}
-                          (:rules session))]
+                          (map :tx-data (:rules session)))
+          session (update session :rules #(mapv (fn [r] (dissoc r :tx-data)) %))]
       #_(clojure.pprint/pprint session)
       (if (not-empty tx-data)
-        (recur (reduce transact1 (update session :rules #(mapv (fn [r] (dissoc r :new-activations)) %)) tx-data))
+        (recur (reduce transact1 session tx-data))
         session))))
 
 
