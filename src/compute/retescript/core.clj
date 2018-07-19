@@ -151,8 +151,7 @@
 
 (defn run-rule
   [fact rule]
-  (let [rule (dissoc rule :new-activations)
-        triggered? (loop [[[pattern pred] & preds] (:preds rule)]
+  (let [triggered? (loop [[[pattern pred] & preds] (:preds rule)]
                      #_(println pattern fact ((or pred (constantly nil)) fact))
                      (if (nil? pred)
                        false
@@ -184,8 +183,9 @@
     (let [tx-data (reduce #(set/union %1 (set (mapcat val (:new-activations %2))))
                           #{}
                           (:rules session))]
+      #_(clojure.pprint/pprint session)
       (if (not-empty tx-data)
-        (recur (reduce transact1 session tx-data))
+        (recur (reduce transact1 (update session :rules #(mapv (fn [r] (dissoc r :new-activations)) %)) tx-data))
         session))))
 
 
