@@ -6,43 +6,6 @@
             [clojure.set :as set])
   (:import (datascript.query Context)))
 
-(def game-over-q
-  '[:find [?move ...]
-    :where
-    [?move :square _]])
-
-(def move-request-q
-  '[:find ?game ?player ?moves ?teaching-mode ?response-fn
-    :where
-    [?game :type ::Game]
-    [?game :game-over false]
-    [?game :current-player ?player]
-    [?game :moves ?moves]
-    [?game :teaching-mode ?teaching-mode]
-    [?game :response-fn ?response-fn]])
-
-(def move-response-q
-  '[:find ?game ?request ?response ?player ?position
-    :where
-    [?game :type ::Game]
-    [?request :type ::MoveRequest]
-    [?request :game ?game]
-    [?request :position ?position]
-    [?response :type ::MoveResponse]
-    [?response :game ?game]
-    [?response :request ?request]
-    [?response :position ?position]
-    [?response :player ?player]])
-
-(def cats-game
-  '[:find ?game
-    :where
-    [?game :type ::Game]
-    [not [?game :winner _]]
-    [?game :moves ?moves]
-    [(count ?moves) ?count]
-    [(< ?count 9)]])
-
 (defn replace-query-vars
   [x]
   (if (and (symbol? x) (= \? (first (str x))))
@@ -119,8 +82,7 @@
         rhs-fn `(fn [~@rhs-args]
                   ~rhs)]
     (assoc cq :preds preds
-              :rhs-fn rhs-fn
-              :activations {})))
+              :rhs-fn rhs-fn)))
 
 (defmacro defrules
   [name rules]
@@ -144,6 +106,7 @@
     =>
     (println ?e ?v)]])
 
+
 (defn create-session
   [& rulesets]
   {:rules (vec (mapcat identity rulesets))
@@ -162,17 +125,28 @@
       (let [op (first fact)
             update-fn (if (= :db/retract op) disj conj)
             facts (update-fn (:facts rule) (vec (rest fact)))
+            rule (assoc rule :facts facts)
             bindings (d/q (:query rule) facts)
-            activations (into {} (map (juxt identity #(apply (:rhs-fn rule) %)) bindings))
-            tx-data (if (= :db/retract op)
-                      ()
-                      (set (mapcat val activations)))]
-        (if (not-empty bindings)
-          (-> rule
-              (assoc :facts facts)
-              (update :activations #(merge-with set/union %1 activations))
-              (assoc :tx-data tx-data))
-          (assoc rule :facts facts)))
+            existing-bindings (set (set (-> rule :activations keys)))
+            new-bindings (set/difference bindings existing-bindings)
+            retracted-bindings (set/difference existing-bindings bindings)
+            rule (if (not-empty retracted-bindings)
+                   (let [tx-data (set (->> retracted-bindings
+                                           (mapcat (:activations rule))
+                                           (map #(assoc % 0 :db/retract))))
+                         activations (apply dissoc (:activations rule) retracted-bindings)]
+                     (-> rule
+                         (assoc :activations activations)
+                         (update :tx-data concat tx-data)))
+                   rule)
+            rule (if (not-empty new-bindings)
+                   (let [activations (into {} (map (juxt identity #(apply (:rhs-fn rule) %)) new-bindings))
+                         tx-data (set (mapcat val activations))]
+                     (-> rule
+                         (update :activations merge activations)
+                         (update :tx-data concat tx-data)))
+                   rule)]
+        rule)
       rule)))
 
 
@@ -188,6 +162,7 @@
                           #{}
                           (map :tx-data (:rules session)))
           session (update session :rules #(mapv (fn [r] (dissoc r :tx-data)) %))]
+      #_(println tx-data)
       #_(clojure.pprint/pprint session)
       (if (not-empty tx-data)
         (recur (reduce transact1 session tx-data))
