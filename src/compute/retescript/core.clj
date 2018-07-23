@@ -176,7 +176,7 @@
      [?e1 :a _]
      [_ :a ?v2]
      #_[?e1 :b ?v2]
-     [(+ ?v2 1) ?q]]
+     #_[(+ ?v2 1) ?q]]
     =>
     (println "R4" ?e1 ?v2)]])
 
@@ -238,7 +238,9 @@
                             :pattern-binders  pbs
                             :function-binders fbs
                             :bindings         #{}}))))]
-    (assoc rule :joined-pattern-binders jbs)))
+    (-> rule
+        (assoc :joined-binders jbs)
+        (dissoc :pattern-binders :function-binders))))
 
 (defn create-session
   [& rulesets]
@@ -253,81 +255,86 @@
   (let [common-vars (set/intersection vars fact-vars)]
     (let [b1 (select-keys fact-binding common-vars)]
       (->> bindings
-           (filter #(= b1 (select-keys % common-vars)))
+           (filter #(= b1 (select-keys (:binding %) common-vars)))
            set))))
 
 (defn merge-bindings
-  [joined-bindings fact-binding]
+  [joined-bindings [fact-pattern {fact-binding :binding}]]
   (->> joined-bindings
-       (map (partial merge fact-binding))
+       (map (fn [pb]
+              (-> pb
+                  (update :patterns conj fact-pattern)
+                  (update :binding merge fact-binding))))
        set))
 
 (defn update-pattern-bindings
-  [op current-bindings fact-binding]
-  (let [joined-bindings (join-bindings fact-binding current-bindings)]
+  [op current-bindings [fact-pattern {fact-binding :binding :as fb} :as pfb]]
+  (let [joined-bindings (join-bindings fb current-bindings)]
     (if (= op :db/retract)
       (if (empty? joined-bindings)
         current-bindings
         (update current-bindings :bindings set/difference joined-bindings))
       (if (empty? joined-bindings)
-        (update current-bindings :bindings conj (:binding fact-binding))
+        (update current-bindings :bindings conj {:patterns #{fact-pattern} :binding fact-binding})
         (-> current-bindings
             (update :bindings set/difference joined-bindings)
-            (update :bindings set/union (merge-bindings joined-bindings (:binding fact-binding))))))))
+            (update :bindings set/union (merge-bindings joined-bindings pfb)))))))
 
 (defn update-bindings
-  [op current-bindings fact-binding]
-  (let [bindings (update-pattern-bindings op current-bindings fact-binding)
-        function-binders (:function-binders bindings)]
-    (update bindings :bindings #(->> %
-                                     (map (fn [b]
-                                            (reduce (fn [b fb]
-                                                      (if (and
-                                                            (not (contains? b (:binding-var fb)))
-                                                            (set/subset? (-> fb :args set) (-> b keys set)))
-                                                        (merge b (apply (:fn fb) (map b (:args fb))))
-                                                        b))
-                                                    b function-binders)))
-                                     set))))
+  [op current-bindings pattern-fact-binding]
+  (let [pattern-bindings (update-pattern-bindings op current-bindings pattern-fact-binding)
+        function-binders (:function-binders pattern-bindings)]
+    (update pattern-bindings :bindings #(->> %
+                                             (map (fn [{b :binding :as pb}]
+                                                    (assoc pb
+                                                      :binding (reduce (fn [b fb]
+                                                                         (if (and
+                                                                               (not (contains? b (:binding-var fb)))
+                                                                               (set/subset? (-> fb :args set) (-> b keys set)))
+                                                                           (merge b (apply (:fn fb) (map b (:args fb))))
+                                                                           b))
+                                                                       b function-binders))))
+                                             set))))
 
 (defn cross-join
   [[x & xs]]
   (if (empty? xs)
     x
     (for [x1 x x2 (cross-join xs)]
-      (merge x1 x2))))
+      {:patterns (set/union (:patterns x1) (:patterns x2))
+       :binding (merge (:binding x1) (:binding x2))})))
 
 (defn run-rule
   [fact rule]
   (let [f (subvec fact 1)
-        pattern-binders (:pattern-binders rule)
-        function-binders (:function-binders rule)
+        pattern-binders (mapcat :pattern-binders (:joined-binders rule))
+        patterns (->> pattern-binders (map :clause) set)
         ; TODO - check for conflicts
-        fact-bindings (->> pattern-binders
-                           (map (fn [{:keys [clause vars fn]}]
-                                  [clause {:vars vars :binding (fn f)}]))
-                           (filter (fn [[_ {bs :binding}]] (some? bs)))
-                           (into {}))]
-    (println (:name rule) fact fact-bindings)
-    (if (not-empty fact-bindings)
+        pattern-fact-bindings (->> pattern-binders
+                                   (map (fn [{:keys [clause vars fn]}]
+                                          [clause {:vars vars :binding (fn f)}]))
+                                   (filter (fn [[_ {bs :binding}]] (some? bs)))
+                                   (into {}))]
+    (println (:name rule) fact pattern-fact-bindings)
+    (if (not-empty pattern-fact-bindings)
       (let [op (first fact)
             bindings-by-join (->> rule
-                                  :joined-pattern-binders
+                                  :joined-binders
                                   (mapv (fn [jpb]
-                                          (->> fact-bindings
-                                               (reduce (fn [jpb [_ fb]]
+                                          (->> pattern-fact-bindings
+                                               (reduce (fn [jpb [p fb :as pfb]]
                                                          (if (not-empty (set/intersection (:vars fb) (:vars jpb)))
-                                                           (update-bindings op jpb fb)
+                                                           (update-bindings op jpb pfb)
                                                            jpb))
                                                        jpb)))))
-            rule (assoc rule :joined-pattern-binders bindings-by-join)
+            rule (assoc rule :joined-binders bindings-by-join)
             cross-joins (->> bindings-by-join
                              (map :bindings)
                              cross-join
                              set)
-            ;;; TODO - ensure all clauses match
             complete-bindings (->> cross-joins
-                                   (filter #(set/subset? (-> rule :rhs-args set) (-> % keys set)))
+                                   (filter #(= patterns (:patterns %)))
+                                   (map :binding)
                                    set)
             existing-bindings (set (-> rule :activations keys))
             new-bindings (set/difference complete-bindings existing-bindings)
