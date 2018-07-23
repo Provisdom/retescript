@@ -291,6 +291,12 @@
                                                     b function-binders)))
                                      set))))
 
+(defn cross-join
+  [[x & xs]]
+  (if (empty? xs)
+    x
+    (for [x1 x x2 (cross-join xs)]
+      (merge x1 x2))))
 
 (defn run-rule
   [fact rule]
@@ -318,6 +324,11 @@
             _ (println "****")
             _ (clojure.pprint/pprint bindings-by-join)
             rule (assoc rule :joined-pattern-binders bindings-by-join)
+            cross-joins (->> bindings-by-join
+                             (map :bindings)
+                             cross-join
+                             set)
+            _ (println cross-joins)
             #_#_collapsed-bindings (let [bs (set
                                               (for [bindings (:bindings collapsed-bindings)]
                                                 (reduce (fn [b fb]
