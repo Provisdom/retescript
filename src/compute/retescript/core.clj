@@ -145,37 +145,37 @@
        ~cr)))
 
 (defrules rs
-  [[::r1
-    [:find ?e
-     :where
-     [?e :a 1]]
-    =>
-    [[:db/add ?e :one true]]]
+  [#_[::r1
+      [:find ?e
+       :where
+       [?e :a 1]]
+      =>
+      [[:db/add ?e :one true]]]
 
-   [::r2
-    [:find ?e ?v
-     :where
-     [?e :a ?v]
-     [?e :one true]]
-    =>
-    (println ?e ?v)]
+   #_[::r2
+      [:find ?e ?v
+       :where
+       [?e :a ?v]
+       [?e :one true]]
+      =>
+      (println ?e ?v)]
 
-   [::r3
-    [:find ?e ?x ?z
-     :where
-     [?e :a ?v]
-     [(+ ?x 2) ?z]
-     [(* ?v 0.3) ?x]]
-    =>
-    (println "X" ?x ?z)
-    [[:db/add ?e :x ?x]]]
+   #_[::r3
+      [:find ?e ?x ?z
+       :where
+       [?e :a ?v]
+       [(+ ?x 2) ?z]
+       [(* ?v 0.3) ?x]]
+      =>
+      (println "X" ?x ?z)
+      [[:db/add ?e :x ?x]]]
 
    [::r4
     [:find ?e1 ?v2
      :where
      [?e1 :a _]
      [_ :a ?v2]
-     #_[?e1 :b ?v2]
+     [_ :b ?v2]
      #_[(+ ?v2 1) ?q]]
     =>
     (println "R4" ?e1 ?v2)]])
@@ -329,9 +329,11 @@
                                                        jpb)))))
             rule (assoc rule :joined-binders bindings-by-join)
             cross-joins (->> bindings-by-join
-                             (map :bindings)
-                             cross-join
-                             set)
+                             (map (fn [jb]
+                                    (->> jb
+                                         :bindings
+                                         (filter (fn [%] (= (:vars jb) (-> % :binding keys set)))))))
+                             cross-join)
             complete-bindings (->> cross-joins
                                    (filter #(= patterns (:patterns %)))
                                    (map :binding)
