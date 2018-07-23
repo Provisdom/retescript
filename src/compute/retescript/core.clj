@@ -145,30 +145,30 @@
        ~cr)))
 
 (defrules rs
-  [#_#_[::r1
-        [:find ?e
-         :where
-         [?e :a 1]]
-        =>
-        [[:db/add ?e :one true]]]
+  [[::r1
+    [:find ?e
+     :where
+     [?e :a 1]]
+    =>
+    [[:db/add ?e :one true]]]
 
-      [::r2
-       [:find ?e ?v
-        :where
-        [?e :a ?v]
-        [?e :one true]]
-       =>
-       (println ?e ?v)]
+   [::r2
+    [:find ?e ?v
+     :where
+     [?e :a ?v]
+     [?e :one true]]
+    =>
+    (println ?e ?v)]
 
-   #_[::r3
-      [:find ?e ?x ?z
-       :where
-       [?e :a ?v]
-       [(+ ?x 2) ?z]
-       [(* ?v 0.3) ?x]]
-      =>
-      (println "X" ?x ?z)
-      [[:db/add ?e :x ?x]]]
+   [::r3
+    [:find ?e ?x ?z
+     :where
+     [?e :a ?v]
+     [(+ ?x 2) ?z]
+     [(* ?v 0.3) ?x]]
+    =>
+    (println "X" ?x ?z)
+    [[:db/add ?e :x ?x]]]
 
    [::r4
     [:find ?e1 ?v2
@@ -224,7 +224,6 @@
 
 (defn group-join-patterns
   [rule]
-  (println (:name rule))
   (let [jbs (->> (join-graph-components rule)
                  (mapv (fn [jb]
                          (let [pbs (->> jb
@@ -321,45 +320,38 @@
                                                            (update-bindings op jpb fb)
                                                            jpb))
                                                        jpb)))))
-            _ (println "****")
-            _ (clojure.pprint/pprint bindings-by-join)
             rule (assoc rule :joined-pattern-binders bindings-by-join)
             cross-joins (->> bindings-by-join
                              (map :bindings)
                              cross-join
                              set)
-            _ (println cross-joins)
-            #_#_collapsed-bindings (let [bs (set
-                                              (for [bindings (:bindings collapsed-bindings)]
-                                                (reduce (fn [b fb]
-                                                          (if (set/subset? (set (:args fb)) (-> b keys set))
-                                                            (assoc b (:binding-var fb) (get (apply (:fn fb) (map b (:args fb))) (:binding-var fb)))
-                                                            b))
-                                                        bindings function-binders)))]
-                                     (assoc collapsed-bindings :vars (-> bs first keys set) :bindings bs))
-            #_#_existing-bindings (set (-> rule :activations keys))
-            #_#_#_#_new-bindings (set/difference (:bindings collapsed-bindings) existing-bindings)
-                retracted-bindings (set/intersection existing-bindings (:bindings collapsed-bindings))
-            #_#_#_#_rule (if (not-empty retracted-bindings)
-                           (let [tx-data (set (->> retracted-bindings
-                                                   (mapcat (:activations rule))
-                                                   (filter #(not= :db/add! (first %)))
-                                                   (map #(assoc % 0 :db/retract))))
-                                 activations (apply dissoc (:activations rule) retracted-bindings)]
-                             (-> rule
-                                 (assoc :activations activations)
-                                 (update :tx-data concat tx-data)))
-                           rule)
-                rule (if (not-empty new-bindings)
-                       (let [activations (->> new-bindings
-                                              (map (juxt identity
-                                                         #(apply (:rhs-fn rule) (map % (:rhs-args rule)))))
-                                              (into {}))
-                             tx-data (set (mapcat val activations))]
-                         (-> rule
-                             (update :activations merge activations)
-                             (update :tx-data concat tx-data)))
-                       rule)]
+            ;;; TODO - ensure all clauses match
+            complete-bindings (->> cross-joins
+                                   (filter #(set/subset? (-> rule :rhs-args set) (-> % keys set)))
+                                   set)
+            existing-bindings (set (-> rule :activations keys))
+            new-bindings (set/difference complete-bindings existing-bindings)
+            retracted-bindings (set/difference existing-bindings complete-bindings)
+            rule (if (not-empty retracted-bindings)
+                   (let [tx-data (set (->> retracted-bindings
+                                           (mapcat (:activations rule))
+                                           (filter #(not= :db/add! (first %)))
+                                           (map #(assoc % 0 :db/retract))))
+                         activations (apply dissoc (:activations rule) retracted-bindings)]
+                     (-> rule
+                         (assoc :activations activations)
+                         (update :tx-data concat tx-data)))
+                   rule)
+            rule (if (not-empty new-bindings)
+                   (let [activations (->> new-bindings
+                                          (map (juxt identity
+                                                     #(apply (:rhs-fn rule) (map % (:rhs-args rule)))))
+                                          (into {}))
+                         tx-data (set (mapcat val activations))]
+                     (-> rule
+                         (update :activations merge activations)
+                         (update :tx-data concat tx-data)))
+                   rule)]
         rule)
       rule)))
 
