@@ -5,7 +5,8 @@
             [datascript.arrays :as da]
             [clojure.set :as set]
             [loom.graph :as graph]
-            [loom.alg :as alg])
+            [loom.alg :as alg]
+            [clojure.pprint :refer [pprint]])
   (:import (datascript.query Context)))
 
 (defn replace-query-vars
@@ -58,6 +59,10 @@
   [f]
   [(apply list (-> f :fn :symbol) (->> f :args (map #(or (:symbol %) (:value %))))) (-> f :binding :variable :symbol)])
 
+(defn unparse-predicate
+  [p]
+  [(apply list (-> p :fn :symbol) (->> p :args (map #(or (:symbol %) (:value %)))))])
+
 (defn pattern-clause-binding-fn
   [pattern]
   (let [var->idx (->> (map vector pattern (range))
@@ -71,6 +76,15 @@
                 (when (dq/matches-pattern? '~pattern x#)
                   (into {} (map (fn [[v# i#]] [v# (x# i#)]) '~var->idx))))}))
 
+(defn predicate-clause-fn
+  [f args]
+  (let [[body] f]
+    `{:clause      '~f
+      :type        :predicate
+      :args        '~args
+      :vars        '~(set args)
+      :fn          (fn [~@args] ~body)}))
+
 (defn function-clause-binding-fn
   [f args]
   (let [[body binding-var] f]
@@ -80,7 +94,6 @@
       :args        '~args
       :vars        '~(conj (set args) binding-var)
       :fn          (fn [~@args] {'~binding-var ~body})}))
-
 
 (defn compile-query
   [query-def]
@@ -106,37 +119,22 @@
         binders (->> cq
                      :query-ast
                      :qwhere
-                     (filter binding?)
                      (mapv (fn [p]
                              (cond
                                (pattern? p) (pattern-clause-binding-fn (unparse-pattern p))
 
-                               (function? p) (function-clause-binding-fn (unparse-function p) (->> p :args (map :symbol) (filter dq/free-var?) vec))))))
+                               (function? p) (function-clause-binding-fn (unparse-function p) (->> p :args (map :symbol) (filter dq/free-var?) vec))
+
+                               (predicate? p) (predicate-clause-fn (unparse-predicate p) (->> p :args (map :symbol) (filter dq/free-var?) vec))))))
 
         rhs-args (->> cq :query-ast :qfind :elements (mapv :symbol))
         rhs-fn `(fn [~@rhs-args]
                   ~@rhs)]
     (assoc cq :pattern-binders (->> binders (filter #(= :pattern (:type %))) vec)
               :function-binders (->> binders (filter #(= :function (:type %))) vec)
+              :predicates (->> binders (filter #(= :predicate (:type %))) vec)
               :rhs-args `'~rhs-args
               :rhs-fn rhs-fn)))
-
-(defn collapse-bindings
-  [pattern-bindings {fact-binding-vars :vars fact-bindings :bindings}]
-  (loop [[[pattern {binding-vars :vars bindings :bindings}] & pattern-bindings] pattern-bindings
-         fact-bindings fact-bindings]
-    (if (not-empty bindings)
-      (let [common-vars (set/intersection binding-vars fact-binding-vars)]
-        (recur pattern-bindings
-               (if (empty? bindings)
-                 fact-bindings
-                 (set
-                   (filter some?
-                           (for [cb fact-bindings
-                                 b bindings]
-                             (when (= (select-keys cb common-vars) (select-keys b common-vars))
-                               (merge cb b))))))))
-      {:vars fact-binding-vars :bindings fact-bindings})))
 
 (defmacro defrules
   [name rules]
@@ -148,7 +146,8 @@
   [#_[::r1
       [:find ?e
        :where
-       [?e :a 1]]
+       [?e :a ?v]
+       [(= 1 ?v)]]
       =>
       [[:db/add ?e :one true]]]
 
@@ -160,43 +159,31 @@
       =>
       (println ?e ?v)]
 
-   #_[::r3
-      [:find ?e ?x ?z
-       :where
-       [?e :a ?v]
-       [(+ ?x 2) ?z]
-       [(* ?v 0.3) ?x]]
-      =>
-      (println "X" ?x ?z)
-      [[:db/add ?e :x ?x]]]
+   [::r3
+    [:find ?e ?x ?z
+     :where
+     [?e :a ?v]
+     [(+ ?x 2) ?z]
+     [(* ?v 0.3) ?x]]
+    =>
+    (println "X" ?x ?z)
+    [[:db/add ?e :x ?x]]]
 
    [::r4
     [:find ?e1 ?v2
      :where
      [?e1 :a _]
      [_ :a ?v2]
-     [_ :b ?v2]
-     #_[(+ ?v2 1) ?q]]
+     #_[_ :b ?v2]
+     [(identity ?v2) ?q]
+     #_[(inc ?v2) ?q]
+     [?e1 :a ?q]]
     =>
     (println "R4" ?e1 ?v2)]])
 
-
-#_(defn sort-function-bindings
-    [rule]
-    (if-let [function-binders (:function-binders rule)]
-      (let [binding-vars (->> function-binders (map (juxt :binding-var identity)) (into {}))
-            g (reduce (fn [g fb]
-                        (reduce (fn [g v] (if-let [fb' (binding-vars v)] (update g fb conj fb') g))
-                                g (:args fb)))
-                      (into {} (map vector function-binders (repeat #{})))
-                      function-binders)
-            sorted-binders (-> g graph/kahn-sort reverse vec)]
-        (assoc rule :function-binders sorted-binders))
-      rule))
-
 (defn join-graph-components
   [rule]
-  (let [pbs (concat (:pattern-binders rule) (:function-binders rule))
+  (let [pbs (concat (:pattern-binders rule) #_(:function-binders rule))
         edges (loop [[pb & pbs] pbs
                      edges []]
                 (if pb
@@ -210,15 +197,15 @@
                 (apply graph/add-edges g edges))]
     (alg/connected-components g)))
 
-(defn sort-function-bindings
-  [function-bindings]
-  (let [edges (->> (for [f1 function-bindings
-                         f2 function-bindings]
+(defn sort-function-binders
+  [function-binders]
+  (let [edges (->> (for [f1 function-binders
+                         f2 function-binders]
                      (when (contains? (-> f1 :args set) (-> f2 :binding-var))
                        [f2 f1]))
                    (filter some?))
         g (-> (graph/digraph)
-              (graph/add-nodes* function-bindings)
+              (graph/add-nodes* function-binders)
               (graph/add-edges* edges))]
     (alg/topsort g)))
 
@@ -229,23 +216,23 @@
                          (let [pbs (->> jb
                                         (filter #(= :pattern (:type %)))
                                         vec)
-                               fbs (->> jb
-                                        (filter #(= :function (:type %)))
-                                        sort-function-bindings
-                                        vec)
-                               vars (apply set/union (map :vars (concat pbs fbs)))]
-                           {:vars             vars
-                            :pattern-binders  pbs
-                            :function-binders fbs
-                            :bindings         #{}}))))]
+                               #_#_fbs (->> jb
+                                            (filter #(= :function (:type %)))
+                                            sort-function-binders
+                                            vec)
+                               vars (apply set/union (map :vars pbs))]
+                           {:vars            vars
+                            :pattern-binders pbs
+                            #_#_:function-binders fbs
+                            :bindings        #{}}))))]
     (-> rule
         (assoc :joined-binders jbs)
-        (dissoc :pattern-binders :function-binders))))
+        (dissoc :pattern-binders #_:function-binders))))
 
 (defn create-session
   [& rulesets]
   {:rules           (vec (mapcat #(->> %
-                                       #_(map sort-function-bindings)
+                                       (map (fn [r] (update r :function-binders sort-function-binders)))
                                        (map group-join-patterns))
                                  rulesets))
    :pending-tx-data #{}})
@@ -263,7 +250,7 @@
   (->> joined-bindings
        (map (fn [pb]
               (-> pb
-                  (update :patterns conj fact-pattern)
+                  (update :patterns set/union fact-pattern)
                   (update :binding merge fact-binding))))
        set))
 
@@ -275,7 +262,7 @@
         current-bindings
         (update current-bindings :bindings set/difference joined-bindings))
       (if (empty? joined-bindings)
-        (update current-bindings :bindings conj {:patterns #{fact-pattern} :binding fact-binding})
+        (update current-bindings :bindings conj {:patterns fact-pattern :binding fact-binding})
         (-> current-bindings
             (update :bindings set/difference joined-bindings)
             (update :bindings set/union (merge-bindings joined-bindings pfb)))))))
@@ -302,45 +289,68 @@
     x
     (for [x1 x x2 (cross-join xs)]
       {:patterns (set/union (:patterns x1) (:patterns x2))
-       :binding (merge (:binding x1) (:binding x2))})))
+       :binding  (merge (:binding x1) (:binding x2))})))
+
+(defn bind-patterns
+  [f pattern-binders]
+  (->> pattern-binders
+       (map (fn [{:keys [clause vars fn]}]
+              [clause (fn f)]))
+       (filter (fn [[_ b]] (some? b)))
+       (reduce (fn [[ps {vs :vars bs :binding}] [p b]] [(conj ps p)
+                                                        (let [bs (merge bs b)]
+                                                          {:vars (-> bs keys set) :binding bs})])
+               [#{} {:vars #{} :binding {}}])))
 
 (defn run-rule
   [fact rule]
   (let [f (subvec fact 1)
         pattern-binders (mapcat :pattern-binders (:joined-binders rule))
         patterns (->> pattern-binders (map :clause) set)
+        function-binders (:function-binders rule)
+        predicates (:predicates rule)
         ; TODO - check for conflicts
-        pattern-fact-bindings (->> pattern-binders
-                                   (map (fn [{:keys [clause vars fn]}]
-                                          [clause {:vars vars :binding (fn f)}]))
-                                   (filter (fn [[_ {bs :binding}]] (some? bs)))
-                                   (into {}))]
+        pattern-fact-bindings (mapv (partial bind-patterns f) (map :pattern-binders (:joined-binders rule)))]
     (println (:name rule) fact pattern-fact-bindings)
     (if (not-empty pattern-fact-bindings)
       (let [op (first fact)
-            bindings-by-join (->> rule
-                                  :joined-binders
-                                  (mapv (fn [jpb]
-                                          (->> pattern-fact-bindings
-                                               (reduce (fn [jpb [p fb :as pfb]]
-                                                         (if (not-empty (set/intersection (:vars fb) (:vars jpb)))
-                                                           (update-bindings op jpb pfb)
-                                                           jpb))
-                                                       jpb)))))
+            bindings-by-join (mapv (fn [jpb pfb] (update-pattern-bindings op jpb pfb)) (:joined-binders rule) pattern-fact-bindings)
             rule (assoc rule :joined-binders bindings-by-join)
             cross-joins (->> bindings-by-join
                              (map (fn [jb]
                                     (->> jb
                                          :bindings
-                                         (filter (fn [%] (= (:vars jb) (-> % :binding keys set)))))))
-                             cross-join)
+                                         (filter (fn [%] (set/subset? (-> % :binding keys set) (:vars jb)))))))
+                             cross-join
+                             set)
             complete-bindings (->> cross-joins
                                    (filter #(= patterns (:patterns %)))
                                    (map :binding)
+                                   (filter (fn [b] (reduce (fn [match? pred]
+                                                             (and match? (apply (:fn pred) (map b (:args pred)))))
+                                                           true predicates)))
                                    set)
+            bindings (->> complete-bindings
+                          (reduce (fn [bs b]
+                                    (let [b' (loop [[function-binder & function-binders] function-binders
+                                                    b b]
+                                               (if (and b function-binder)
+                                                 (let [fb (apply (:fn function-binder) (map b (:args function-binder)))
+                                                       v (:binding-var function-binder)]
+                                                   (recur
+                                                     function-binders
+                                                     (when (or (nil? (b v)) (= (b v) (fb v)))
+                                                       (merge b fb))))
+                                                 b))]
+                                      (if b' (conj bs b') bs)))
+                                  #{}))
+            _ (pprint bindings)
             existing-bindings (set (-> rule :activations keys))
-            new-bindings (set/difference complete-bindings existing-bindings)
-            retracted-bindings (set/difference existing-bindings complete-bindings)
+            _ (pprint existing-bindings)
+            new-bindings (set/difference bindings existing-bindings)
+            _ (pprint new-bindings)
+            retracted-bindings (set/difference existing-bindings bindings)
+            _ (pprint retracted-bindings)
             rule (if (not-empty retracted-bindings)
                    (let [tx-data (set (->> retracted-bindings
                                            (mapcat (:activations rule))
