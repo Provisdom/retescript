@@ -263,21 +263,8 @@
 
 (defn update-pattern-bindings
   [op joined-pattern-binder pattern-fact-binding]
-  (let [joined-pattern-binder (join-bindings joined-pattern-binder op pattern-fact-binding)
-        pattern-binders (:pattern-binders joined-pattern-binder)
-        patterns (->> pattern-binders
-                      (filter (complement :negate?))
-                      (map :clause)
-                      set)
-        negated-patterns (->> pattern-binders
-                              (filter :negate?)
-                              (map :clause)
-                              set)]
-    (assoc joined-pattern-binder :complete-bindings (->> (:bindings joined-pattern-binder)
-                                                         (filter #(and (empty? (set/difference patterns (:patterns %)))
-                                                                       (empty? (set/intersection negated-patterns (:patterns %)))))
-                                                         (map :binding)
-                                                         set))))
+  (let [joined-pattern-binder (join-bindings joined-pattern-binder op pattern-fact-binding)]
+    joined-pattern-binder))
 
 (defn cross-join
   [[x & xs :as foo]]
@@ -314,7 +301,21 @@
   (let [function-binders (:function-binders path-binders)
         predicates (:predicates path-binders)
         cross-joins (->> (:joined-binders path-binders)
-                         (map :complete-bindings)
+                         (map (fn [joined-pattern-binder]
+                                (let [pattern-binders (:pattern-binders joined-pattern-binder)
+                                      patterns (->> pattern-binders
+                                                    (filter (complement :negate?))
+                                                    (map :clause)
+                                                    set)
+                                      negated-patterns (->> pattern-binders
+                                                            (filter :negate?)
+                                                            (map :clause)
+                                                            set)]
+                                  (->> (:bindings joined-pattern-binder)
+                                       (filter #(and (empty? (set/difference patterns (:patterns %)))
+                                                     (empty? (set/intersection negated-patterns (:patterns %)))))
+                                       (map :binding)
+                                       set))))
                          cross-join
                          set)
         complete-bindings (->> cross-joins
@@ -343,11 +344,11 @@
 
 (defn run-rule
   [facts rule]
-  #_(println "*******" (:name rule) facts)
-  (let [updated-path-binders (reduce (fn [path-binders fact]
-                                       (mapv (partial update-path-binders fact) path-binders))
-                                     (:path-binders rule) facts)
-        bindings (reduce set/union #{} (map path-bindings updated-path-binders))
+  (println "*******" (:name rule) facts)
+  (let [updated-path-binders (time (reduce (fn [path-binders fact]
+                                             (mapv (partial update-path-binders fact) path-binders))
+                                           (:path-binders rule) facts))
+        bindings (time (reduce set/union #{} (map path-bindings updated-path-binders)))
         existing-bindings (set (-> rule :activations keys))
         new-bindings (set/difference bindings existing-bindings)
         retracted-bindings (set/difference existing-bindings bindings)
