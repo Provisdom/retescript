@@ -356,9 +356,11 @@
     bindings))
 
 (defn run-rule
-  [fact rule]
-  #_(println "*******" (:name rule) fact)
-  (let [updated-path-binders (mapv (partial update-path-binders fact) (:path-binders rule))
+  [facts rule]
+  #_(println "*******" (:name rule) facts)
+  (let [updated-path-binders (reduce (fn [path-binders fact]
+                                       (mapv (partial update-path-binders fact) path-binders))
+                                     (:path-binders rule) facts)
         bindings (reduce set/union #{} (map path-bindings updated-path-binders))
         existing-bindings (set (-> rule :activations keys))
         new-bindings (set/difference bindings existing-bindings)
@@ -392,13 +394,13 @@
 
 (defn transact
   [session tx-data]
-  (loop [session (reduce transact1 session tx-data)]
+  (loop [session (transact1 session tx-data)]
     (let [tx-data (apply set/union (map :tx-data (:rules session)))
           session (update session :rules #(mapv (fn [r] (dissoc r :tx-data)) %))]
       #_(println tx-data)
       #_(clojure.pprint/pprint session)
       (if (not-empty tx-data)
-        (recur (reduce transact1 session tx-data))
+        (recur (transact1 session tx-data))
         session))))
 
 
