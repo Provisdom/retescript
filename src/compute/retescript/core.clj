@@ -259,26 +259,46 @@
 
 (defn update-pattern-bindings
   [op current-bindings {fact-pattern :clause fact-binding :binding :as pfb}]
-  (let [joined-bindings (join-bindings pfb current-bindings)]
-    (if (= op :db/retract)
-      (if (empty? joined-bindings)
-        current-bindings
-        (-> current-bindings
-            (update :bindings set/difference joined-bindings)
-            (update :bindings set/union (unmerge-bindings joined-bindings pfb))))
-      (if (empty? joined-bindings)
-        (update current-bindings :bindings conj {:patterns #{fact-pattern} :binding fact-binding})
-        (-> current-bindings
-            (update :bindings set/difference joined-bindings)
-            (update :bindings set/union (merge-bindings joined-bindings pfb)))))))
+  (let [joined-bindings (join-bindings pfb current-bindings)
+        updated-bindings (if (= op :db/retract)
+                           (if (empty? joined-bindings)
+                             (assoc current-bindings :updated-bindings #{})
+                             (let [updated-bindings (unmerge-bindings joined-bindings pfb)]
+                               (-> current-bindings
+                                   (assoc :updated-bindings updated-bindings)
+                                   (update :bindings set/difference joined-bindings)
+                                   (update :bindings set/union updated-bindings))))
+                           (if (empty? joined-bindings)
+                             (let [new-binding {:patterns #{fact-pattern} :binding fact-binding}]
+                               (-> current-bindings
+                                   (assoc :updated-bindings #{new-binding})
+                                   (update :bindings conj new-binding)))
+                             (let [updated-bindings (merge-bindings joined-bindings pfb)]
+                               (-> current-bindings
+                                   (assoc :updated-bindings updated-bindings)
+                                   (update :bindings set/difference joined-bindings)
+                                   (update :bindings set/union updated-bindings)))))
+        pattern-binders (:pattern-binders current-bindings)
+        patterns (->> pattern-binders
+                      (filter (complement :negate?))
+                      (map :clause)
+                      set)
+        negated-patterns (->> pattern-binders
+                              (filter :negate?)
+                              (map :clause)
+                              set)]
+    (assoc updated-bindings :complete-bindings (->> (:bindings updated-bindings)
+                                                    (filter #(and (empty? (set/difference patterns (:patterns %)))
+                                                                  (empty? (set/intersection negated-patterns (:patterns %)))))
+                                                    (map :binding)
+                                                    set))))
 
 (defn cross-join
   [[x & xs :as foo]]
   (if (empty? xs)
     x
     (for [x1 x x2 (cross-join xs)]
-      {:patterns (set/union (:patterns x1) (:patterns x2))
-       :binding  (merge (:binding x1) (:binding x2))})))
+      (merge x1 x2))))
 
 (defn bind-patterns
   [f pattern-binders]
@@ -305,29 +325,13 @@
 
 (defn path-bindings
   [path-binders]
-  (let [pattern-binders (->> (:joined-binders path-binders)
-                             (mapcat :pattern-binders))
-        patterns (->> pattern-binders
-                      (filter (complement :negate?))
-                      (map :clause)
-                      set)
-        negated-patterns (->> pattern-binders
-                              (filter :negate?)
-                              (map :clause)
-                              set)
-        function-binders (:function-binders path-binders)
+  (let [function-binders (:function-binders path-binders)
         predicates (:predicates path-binders)
         cross-joins (->> (:joined-binders path-binders)
-                         (map (fn [jb]
-                                (->> jb
-                                     :bindings
-                                     (filter (fn [%] (set/subset? (-> % :binding keys set) (:vars jb)))))))
+                         (map :complete-bindings)
                          cross-join
                          set)
         complete-bindings (->> cross-joins
-                               (filter #(and (empty? (set/difference patterns (:patterns %)))
-                                             (empty? (set/intersection negated-patterns (:patterns %)))))
-                               (map :binding)
                                (filter (fn [b] (reduce (fn [match? pred]
                                                          (and match?
                                                               (if (:negate? pred)
@@ -353,6 +357,7 @@
 
 (defn run-rule
   [fact rule]
+  #_(println "*******" (:name rule) fact)
   (let [updated-path-binders (mapv (partial update-path-binders fact) (:path-binders rule))
         bindings (reduce set/union #{} (map path-bindings updated-path-binders))
         existing-bindings (set (-> rule :activations keys))
@@ -366,7 +371,7 @@
                      activations (apply dissoc (:activations rule) retracted-bindings)]
                  (-> rule
                      (assoc :activations activations)
-                     (update :tx-data concat tx-data)))
+                     (update :tx-data set/union tx-data)))
                rule)
         rule (if (not-empty new-bindings)
                (let [activations (->> new-bindings
@@ -376,7 +381,7 @@
                      tx-data (set (mapcat val activations))]
                  (-> rule
                      (update :activations merge activations)
-                     (update :tx-data concat tx-data)))
+                     (update :tx-data set/union tx-data)))
                rule)]
     (assoc rule :path-binders updated-path-binders)))
 
@@ -388,9 +393,7 @@
 (defn transact
   [session tx-data]
   (loop [session (reduce transact1 session tx-data)]
-    (let [tx-data (reduce set/union
-                          #{}
-                          (map :tx-data (:rules session)))
+    (let [tx-data (apply set/union (map :tx-data (:rules session)))
           session (update session :rules #(mapv (fn [r] (dissoc r :tx-data)) %))]
       #_(println tx-data)
       #_(clojure.pprint/pprint session)
@@ -414,7 +417,8 @@
      [?e :a ?v]
      [?e :one true]]
     =>
-    (println "R2" ?e ?v)]
+    [[:db/add ?e :foo :bar]]
+    #_(println "R2" ?e ?v)]
 
    [::r3
     [:find ?e ?x ?z
@@ -423,7 +427,7 @@
      [(+ ?x 2) ?z]
      [(* ?v 0.3) ?x]]
     =>
-    (println "R3" ?x ?z)
+    #_(println "R3" ?x ?z)
     [[:db/add ?e :x ?x]]]
 
    [::r4
@@ -436,7 +440,8 @@
      #_[(inc ?v2) ?q]
      #_[?e1 :a ?q]]
     =>
-    (println "R4" ?e1 ?v2)]
+    [[:db/add ?e1 :foo :bar]]
+    #_(println "R4" ?e1 ?v2)]
 
    [:r5
     [:find ?e ?v ?w ?q
@@ -452,7 +457,7 @@
          (and [?e :a 2]
               [?e :b 1]))]
     =>
-    (println "R5" ?e ?v ?w ?q)
+    #_(println "R5" ?e ?v ?w ?q)
     [[:db/add ?e :foo :bar]]]])
 
 (def s (create-session rs))
