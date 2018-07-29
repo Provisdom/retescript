@@ -170,7 +170,7 @@
 
 (defn join-graph-components
   [rule]
-  (let [pbs (concat (:pattern-binders rule) #_(:function-binders rule))
+  (let [pbs (concat (:pattern-binders rule))
         edges (loop [[pb & pbs] pbs
                      edges []]
                 (if pb
@@ -203,18 +203,13 @@
                          (let [pbs (->> jb
                                         (filter #(= :pattern (:type %)))
                                         vec)
-                               #_#_fbs (->> jb
-                                            (filter #(= :function (:type %)))
-                                            sort-function-binders
-                                            vec)
                                vars (apply set/union (map :vars pbs))]
                            {:vars            vars
                             :pattern-binders pbs
-                            #_#_:function-binders fbs
                             :bindings        #{}}))))]
     (-> rule
         (assoc :joined-binders jbs)
-        (dissoc :pattern-binders #_:function-binders))))
+        (dissoc :pattern-binders))))
 
 (defn group-and-sort-path-binders
   [path-binders]
@@ -232,9 +227,8 @@
 
 (defn join-bindings
   [{fact-vars :vars fact-binding :binding} {vars :vars bindings :bindings}]
-  #_(println "JJJ" fact-vars fact-binding vars bindings)
   (->> bindings
-       (filter #(let [common-vars (set/intersection fact-vars (-> % keys set))
+       (filter #(let [common-vars (set/intersection fact-vars (-> (:binding %) keys set))
                       b1 (select-keys fact-binding common-vars)
                       b2 (select-keys (:binding %) common-vars)]
                   (= b1 b2)))
@@ -265,11 +259,10 @@
 
 (defn update-pattern-bindings
   [op current-bindings {fact-pattern :clause fact-binding :binding :as pfb}]
-  (let [joined-bindings (join-bindings fact-binding current-bindings)]
+  (let [joined-bindings (join-bindings pfb current-bindings)]
     (if (= op :db/retract)
       (if (empty? joined-bindings)
         current-bindings
-        ;;; TODO - don't remove entire binding, just pull vars with no remaining clause support
         (-> current-bindings
             (update :bindings set/difference joined-bindings)
             (update :bindings set/union (unmerge-bindings joined-bindings pfb))))
@@ -292,22 +285,12 @@
   (->> pattern-binders
        (map (fn [{:keys [fn] :as pb}]
               (assoc pb :binding (fn f))))
-       (filter (comp some? :binding))
-       #_(reduce (fn [[ps {vs :vars bs :binding} :as r] [p negate? b]]
-                   (println "FOO" p negate? b)
-                   (if (or (and negate? (empty? b))
-                           (and (not negate?) (not-empty b)))
-                     [(conj ps p)
-                      (let [bs (merge bs b)]
-                        {:vars (-> bs keys set) :binding bs})]
-                     r))
-                 [#{} {:vars #{} :binding {}}])))
+       (filter (comp some? :binding))))
 
 (defn update-path-binders
   [fact path-binders]
   (let [f (subvec fact 1)
         pattern-fact-bindings (mapv (partial bind-patterns f) (map :pattern-binders (:joined-binders path-binders)))]
-    (println fact pattern-fact-bindings)
     (if (not-empty pattern-fact-bindings)
       (let [op (first fact)
             updated-joined-binders (mapv (fn [jpb pfbs]
@@ -317,7 +300,6 @@
                                              jpb pfbs))
                                          (:joined-binders path-binders) pattern-fact-bindings)
             updated-path-binders (assoc path-binders :joined-binders updated-joined-binders)]
-        #_(pprint updated-joined-binders)
         updated-path-binders)
       path-binders)))
 
@@ -371,11 +353,8 @@
 
 (defn run-rule
   [fact rule]
-  (println "*********" (:name rule))
   (let [updated-path-binders (mapv (partial update-path-binders fact) (:path-binders rule))
-        #_#__ (pprint updated-path-binders)
         bindings (reduce set/union #{} (map path-bindings updated-path-binders))
-        _ (pprint bindings)
         existing-bindings (set (-> rule :activations keys))
         new-bindings (set/difference bindings existing-bindings)
         retracted-bindings (set/difference existing-bindings bindings)
@@ -421,43 +400,43 @@
 
 
 (defrules rs
-  [#_[::r1
-      [:find ?e
-       :where
-       [?e :a ?v]
-       [(= 1 ?v)]]
-      =>
-      [[:db/add ?e :one true]]]
+  [[::r1
+    [:find ?e
+     :where
+     [?e :a ?v]
+     [(= 1 ?v)]]
+    =>
+    [[:db/add ?e :one true]]]
 
-   #_[::r2
-      [:find ?e ?v
-       :where
-       [?e :a ?v]
-       [?e :one true]]
-      =>
-      (println ?e ?v)]
+   [::r2
+    [:find ?e ?v
+     :where
+     [?e :a ?v]
+     [?e :one true]]
+    =>
+    (println "R2" ?e ?v)]
 
-   #_[::r3
-      [:find ?e ?x ?z
-       :where
-       [?e :a ?v]
-       [(+ ?x 2) ?z]
-       [(* ?v 0.3) ?x]]
-      =>
-      (println "X" ?x ?z)
-      [[:db/add ?e :x ?x]]]
+   [::r3
+    [:find ?e ?x ?z
+     :where
+     [?e :a ?v]
+     [(+ ?x 2) ?z]
+     [(* ?v 0.3) ?x]]
+    =>
+    (println "R3" ?x ?z)
+    [[:db/add ?e :x ?x]]]
 
-   #_[::r4
-      [:find ?e1 ?v2
-       :where
-       [?e1 :a _]
-       [_ :a ?v2]
-       #_[_ :b ?v2]
-       [(identity ?v2) ?q]
-       #_[(inc ?v2) ?q]
-       [?e1 :a ?q]]
-      =>
-      (println "R4" ?e1 ?v2)]
+   [::r4
+    [:find ?e1 ?v2
+     :where
+     [?e1 :a _]
+     [_ :a ?v2]
+     #_[_ :b ?v2]
+     #_[(identity ?v2) ?q]
+     #_[(inc ?v2) ?q]
+     #_[?e1 :a ?q]]
+    =>
+    (println "R4" ?e1 ?v2)]
 
    [:r5
     [:find ?e ?v ?w ?q
