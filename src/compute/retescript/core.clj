@@ -348,31 +348,35 @@
   (let [updated-path-binders (time (reduce (fn [path-binders fact]
                                              (mapv (partial update-path-binders fact) path-binders))
                                            (:path-binders rule) facts))
-        bindings (time (reduce set/union #{} (map path-bindings updated-path-binders)))
-        existing-bindings (set (-> rule :activations keys))
-        new-bindings (set/difference bindings existing-bindings)
-        retracted-bindings (set/difference existing-bindings bindings)
-        rule (if (not-empty retracted-bindings)
-               (let [tx-data (set (->> retracted-bindings
-                                       (mapcat (:activations rule))
-                                       (filter #(not= :db/add! (first %)))
-                                       (map #(assoc % 0 :db/retract))))
-                     activations (apply dissoc (:activations rule) retracted-bindings)]
-                 (-> rule
-                     (assoc :activations activations)
-                     (update :tx-data set/union tx-data)))
-               rule)
-        rule (if (not-empty new-bindings)
-               (let [activations (->> new-bindings
-                                      (map (juxt identity
-                                                 #(apply (:rhs-fn rule) (map % (:rhs-args rule)))))
-                                      (into {}))
-                     tx-data (set (mapcat val activations))]
-                 (-> rule
-                     (update :activations merge activations)
-                     (update :tx-data set/union tx-data)))
-               rule)]
-    (assoc rule :path-binders updated-path-binders)))
+        rule (assoc rule :path-binders updated-path-binders)]
+    (if (:rhs-fn rule)
+      (let [bindings (time (reduce set/union #{} (map path-bindings (:path-binders rule))))
+            existing-bindings (set (-> rule :activations keys))
+            new-bindings (set/difference bindings existing-bindings)
+            retracted-bindings (set/difference existing-bindings bindings)
+            rule (if (not-empty retracted-bindings)
+                   (let [tx-data (set (->> retracted-bindings
+                                           (mapcat (:activations rule))
+                                           (filter #(not= :db/add! (first %)))
+                                           (map #(assoc % 0 :db/retract))))
+                         activations (apply dissoc (:activations rule) retracted-bindings)]
+                     (-> rule
+                         (assoc :activations activations)
+                         (update :tx-data set/union tx-data)))
+                   rule)
+            rule (if (not-empty new-bindings)
+                   (let [activations (->> new-bindings
+                                          (map (juxt identity
+                                                     #(apply (:rhs-fn rule) (map % (:rhs-args rule)))))
+                                          (into {}))
+                         tx-data (set (mapcat val activations))]
+                     (-> rule
+                         (update :activations merge activations)
+                         (update :tx-data set/union tx-data)))
+                   rule)]
+        rule)
+      rule)))
+
 
 (defn transact1
   [session fact]
@@ -390,6 +394,10 @@
         (recur (transact1 session tx-data))
         session))))
 
+(defn query
+  [session rule-name]
+  (let [rule (->> session :rules (filter #(= rule-name (:name %))) first)]
+    (reduce set/union #{} (map path-bindings (:path-binders rule)))))
 
 (defrules rs
   [[::r1
@@ -432,7 +440,7 @@
     [[:db/add ?e1 :foo :bar]]
     #_(println "R4" ?e1 ?v2)]
 
-   [:r5
+   [::r5
     [:find ?e ?v ?w ?q
      :where
      [?e :a ?v]
@@ -447,7 +455,21 @@
               [?e :b 1]))]
     =>
     #_(println "R5" ?e ?v ?w ?q)
-    [[:db/add ?e :foo :bar]]]])
+    [[:db/add ?e :foo :bar]]]
+
+   [::q1
+    [:find ?e ?v ?w ?q
+     :where
+     [?e :a ?v]
+     [?e :b ?w]
+     [?e :c ?q]
+     (not [?e :c 1]
+          [?e :d 2]
+          [(> ?w 5)]
+          #_[(identity ?e) ?e])
+     (or [?e :a 1]
+         (and [?e :a 2]
+              [?e :b 1]))]]])
 
 (def s (create-session rs))
 
