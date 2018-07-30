@@ -260,7 +260,11 @@
 (defn join-bindings
   [joined-pattern-binder op {fact-pattern :clause fact-vars :vars fact-binding :binding :as pfb}]
   (let [joined? (volatile! false)
+        pattern-filter (if (= :db/retract op)
+                         #(contains? (:patterns %) fact-pattern)
+                         #(not (contains? (:patterns %) fact-pattern)))
         joined-bindings (->> (:bindings joined-pattern-binder)
+                             (filter pattern-filter)
                              (mapv (fn [%]
                                      (let [binding (:binding %)
                                            join? (reduce (fn [j? fv]
@@ -377,7 +381,7 @@
             rule (if (not-empty retracted-bindings)
                    (let [tx-data (set (->> retracted-bindings
                                            (mapcat (:activations rule))
-                                           (filter #(not= :db/add! (first %)))
+                                           (filter #(= :db/add (first %)))
                                            (map #(assoc % 0 :db/retract))))
                          activations (apply dissoc (:activations rule) retracted-bindings)]
                      (-> rule
@@ -437,67 +441,67 @@
     [[:db/add ?e :foo :bar]]
     #_(println "R2" ?e ?v)]
 
-   [::r3
-    [:find ?e ?x ?z
-     :where
-     [?e :a ?v]
-     [(+ ?x 2) ?z]
-     [(* ?v 0.3) ?x]]
-    =>
-    #_(println "R3" ?x ?z)
-    [[:db/add ?e :x ?x]]]
+   #_[::r3
+      [:find ?e ?x ?z
+       :where
+       [?e :a ?v]
+       [(+ ?x 2) ?z]
+       [(* ?v 0.3) ?x]]
+      =>
+      #_(println "R3" ?x ?z)
+      [[:db/add ?e :x ?x]]]
 
-   [::r4
-    [:find ?e1 ?v2
-     :where
-     [?e1 :a _]
-     [_ :a ?v2]
-     #_[_ :b ?v2]
-     #_[(identity ?v2) ?q]
-     #_[(inc ?v2) ?q]
-     #_[?e1 :a ?q]]
-    =>
-    [[:db/add ?e1 :foo :bar]]
-    #_(println "R4" ?e1 ?v2)]
+   #_[::r4
+      [:find ?e1 ?v2
+       :where
+       [?e1 :a _]
+       [_ :a ?v2]
+       #_[_ :b ?v2]
+       #_[(identity ?v2) ?q]
+       #_[(inc ?v2) ?q]
+       #_[?e1 :a ?q]]
+      =>
+      [[:db/add ?e1 :foo :bar]]
+      #_(println "R4" ?e1 ?v2)]
 
-   [::r5
-    [:find ?e ?v ?w ?q
-     :where
-     [?e :a ?v]
-     [?e :b ?w]
-     [?e :c ?q]
-     (not [?e :c 1]
-          [?e :d 2]
-          [(> ?w 5)]
-          #_[(identity ?e) ?e])
-     (or [?e :a 1]
-         (and [?e :a 2]
-              [?e :b 1]))]
-    =>
-    #_(println "R5" ?e ?v ?w ?q)
-    [[:db/add ?e :foo :bar]]]
+   #_[::r5
+      [:find ?e ?v ?w ?q
+       :where
+       [?e :a ?v]
+       [?e :b ?w]
+       [?e :c ?q]
+       (not [?e :c 1]
+            [?e :d 2]
+            [(> ?w 5)]
+            #_[(identity ?e) ?e])
+       (or [?e :a 1]
+           (and [?e :a 2]
+                [?e :b 1]))]
+      =>
+      #_(println "R5" ?e ?v ?w ?q)
+      [[:db/add ?e :foo :bar]]]
 
-   [::r6
-    [:find ?e
-     :where
-     [?e :b 1]
-     [1 :a 1]]
-    =>
-    (println "R6" ?e)]
+   #_[::r6
+      [:find ?e
+       :where
+       [?e :b 1]
+       [1 :a 1]]
+      =>
+      (println "R6" ?e)]
 
-   [::q1
-    [:find ?e ?v ?w ?q
-     :where
-     [?e :a ?v]
-     [?e :b ?w]
-     [?e :c ?q]
-     (not [?e :c 1]
-          [?e :d 2]
-          [(> ?w 5)]
-          #_[(identity ?e) ?e])
-     (or [?e :a 1]
-         (and [?e :a 2]
-              [?e :b 1]))]]])
+   #_[::q1
+      [:find ?e ?v ?w ?q
+       :where
+       [?e :a ?v]
+       [?e :b ?w]
+       [?e :c ?q]
+       (not [?e :c 1]
+            [?e :d 2]
+            [(> ?w 5)]
+            #_[(identity ?e) ?e])
+       (or [?e :a 1]
+           (and [?e :a 2]
+                [?e :b 1]))]]])
 
 (def s (create-session rs))
 
