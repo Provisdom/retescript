@@ -247,16 +247,20 @@
         joined-bindings (->> (:bindings joined-pattern-binder)
                              (mapv (fn [%]
                                      (let [binding (:binding %)
-                                           common-vars (set/intersection fact-vars (-> binding keys set))
-                                           b1 (select-keys fact-binding common-vars)
-                                           b2 (select-keys binding common-vars)
-                                           join? (= b1 b2)]
+                                           join? (reduce (fn [j? fv]
+                                                           (if j?
+                                                             (let [fb (get fact-binding fv)]
+                                                               (and j? (or (nil? fb) (= fb (get binding fv)))))
+                                                             j?))
+                                                         true fact-vars)]
                                        (vswap! joined? #(or join? %))
                                        (if join?
                                          (if (= op :db/retract)
                                            (unmerge-bindings % pfb)
                                            (merge-bindings % pfb))
-                                         %)))))]
+                                         %))))
+                             (filter (comp not-empty :binding))
+                             set)]
     (if @joined?
       (assoc joined-pattern-binder :bindings joined-bindings)
       (update joined-pattern-binder :bindings conj {:patterns #{fact-pattern} :binding fact-binding}))))
@@ -344,13 +348,13 @@
 
 (defn run-rule
   [facts rule]
-  (println "*******" (:name rule) facts)
-  (let [updated-path-binders (time (reduce (fn [path-binders fact]
-                                             (mapv (partial update-path-binders fact) path-binders))
-                                           (:path-binders rule) facts))
+  (println "*******" (:name rule) #_facts)
+  (let [updated-path-binders (reduce (fn [path-binders fact]
+                                       (mapv (partial update-path-binders fact) path-binders))
+                                     (:path-binders rule) facts)
         rule (assoc rule :path-binders updated-path-binders)]
     (if (:rhs-fn rule)
-      (let [bindings (time (reduce set/union #{} (map path-bindings (:path-binders rule))))
+      (let [bindings (reduce set/union #{} (map path-bindings (:path-binders rule)))
             existing-bindings (set (-> rule :activations keys))
             new-bindings (set/difference bindings existing-bindings)
             retracted-bindings (set/difference existing-bindings bindings)
