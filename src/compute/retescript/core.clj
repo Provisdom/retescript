@@ -75,6 +75,21 @@
   [p]
   [(apply list (-> p :fn :symbol) (->> p :args (map #(or (:symbol %) (:value %)))))])
 
+(defn pattern-binding-fn
+  [pattern]
+  (let [[e a v] pattern
+        syms? (mapv symbol? pattern)]
+    (condp = syms?
+      [true true true] `(fn [[e# a# v#]] {'~e e# ~a a# '~v v#})
+      [true true false] `(fn [[e# a# v#]] (when (= v# ~v) {'~e e# '~a a#}))
+      [true false true] `(fn [[e# a# v#]] (when (= a# ~a) {'~e e# '~v v#}))
+      [true false false] `(fn [[e# a# v#]] (when (and (= a# ~a) (= v# ~v)) {'~e e#}))
+      [false true true] `(fn [[e# a# v#]] (when (= e# ~e) {'~a a# '~v v#}))
+      [false true false] `(fn [[e# a# v#]] (when (and (= e# ~e) (= v# ~v)) {'~a a#}))
+      [false false true] `(fn [[e# a# v#]] (when (and (= e# ~e) (= a# ~a)) {'~v v#}))
+      [false false false] `(fn [[e# a# v#]] (when (and (= e# ~e) (= a# ~a) (= v# ~v)) {})))))
+
+
 (defn pattern-clause-binding-fn
   [pattern]
   (let [var->idx (->> (map vector pattern (range))
@@ -84,9 +99,10 @@
     `{:clause '~pattern
       :type   :pattern
       :vars   '~(-> var->idx keys set)
-      :fn     (fn [x#]
-                (when (dq/matches-pattern? '~pattern x#)
-                  (into {} (map (fn [[v# i#]] [v# (x# i#)]) '~var->idx))))}))
+      :fn     ~(pattern-binding-fn pattern)
+      #_(fn [x#]
+          (when (dq/matches-pattern? '~pattern x#)
+            (into {} (map (fn [[v# i#]] [v# (x# i#)]) '~var->idx))))}))
 
 (defn predicate-clause-fn
   [f args]
@@ -259,7 +275,7 @@
                                            (unmerge-bindings % pfb)
                                            (merge-bindings % pfb))
                                          %))))
-                             (filter (comp not-empty :binding))
+                             (filter (comp not-empty :patterns))
                              set)]
     (if @joined?
       (assoc joined-pattern-binder :bindings joined-bindings)
@@ -460,6 +476,14 @@
     =>
     #_(println "R5" ?e ?v ?w ?q)
     [[:db/add ?e :foo :bar]]]
+
+   [::r6
+    [:find ?e
+     :where
+     [?e :b 1]
+     [1 :a 1]]
+    =>
+    (println "R6" ?e)]
 
    [::q1
     [:find ?e ?v ?w ?q
