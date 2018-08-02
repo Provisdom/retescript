@@ -78,15 +78,16 @@
 (defn pattern-binding-fn
   [pattern]
   (let [[e a v] pattern
+        u (symbol "_")
         syms? (mapv symbol? pattern)]
     (condp = syms?
-      [true true true] `(fn [[e# a# v#]] {'~e e# ~a a# '~v v#})
-      [true true false] `(fn [[e# a# v#]] (when (= v# ~v) {'~e e# '~a a#}))
-      [true false true] `(fn [[e# a# v#]] (when (= a# ~a) {'~e e# '~v v#}))
-      [true false false] `(fn [[e# a# v#]] (when (and (= a# ~a) (= v# ~v)) {'~e e#}))
-      [false true true] `(fn [[e# a# v#]] (when (= e# ~e) {'~a a# '~v v#}))
-      [false true false] `(fn [[e# a# v#]] (when (and (= e# ~e) (= v# ~v)) {'~a a#}))
-      [false false true] `(fn [[e# a# v#]] (when (and (= e# ~e) (= a# ~a)) {'~v v#}))
+      [true true true] `(fn [[e# a# v#]] (dissoc {'~e e# ~a a# '~v v#} '~u))
+      [true true false] `(fn [[e# a# v#]] (when (= v# ~v) (dissoc {'~e e# '~a a#} '~u)))
+      [true false true] `(fn [[e# a# v#]] (when (= a# ~a) (dissoc {'~e e# '~v v#} '~u)))
+      [true false false] `(fn [[e# a# v#]] (when (and (= a# ~a) (= v# ~v)) (dissoc {'~e e#} '~u)))
+      [false true true] `(fn [[e# a# v#]] (when (= e# ~e) (dissoc {'~a a# '~v v#} '~u)))
+      [false true false] `(fn [[e# a# v#]] (when (and (= e# ~e) (= v# ~v)) (dissoc {'~a a#} '~u)))
+      [false false true] `(fn [[e# a# v#]] (when (and (= e# ~e) (= a# ~a)) (dissoc {'~v v#} '~u)))
       [false false false] `(fn [[e# a# v#]] (when (and (= e# ~e) (= a# ~a) (= v# ~v)) {})))))
 
 
@@ -158,8 +159,7 @@
                           (mapv (fn [binders]
                                   {:pattern-binders  (->> binders (filter #(= :pattern (:type %))) vec)
                                    :function-binders (->> binders (filter #(= :function (:type %))) vec)
-                                   :predicates       (->> binders (filter #(= :predicate (:type %))) vec)
-                                   :bindings         {}})))]
+                                   :predicates       (->> binders (filter #(= :predicate (:type %))) vec)})))]
     {:name         name
      :query        `'~query
      :query-ast    query-ast
@@ -169,8 +169,6 @@
   [rule-def]
   (let [[name query _ & rhs] rule-def
         cq (compile-query [name query])
-
-
         rhs-args (->> cq :query-ast :qfind :elements (mapv :symbol))
         rhs-fn `(fn [~@rhs-args]
                   ~@rhs)]
@@ -212,6 +210,18 @@
               (graph/add-edges* edges))]
     (vec (alg/topsort g))))
 
+(defn power [s]
+  (loop [[f & r] (seq s) p '(())]
+    (if f (recur r (concat p (map (partial cons f) p)))
+          p)))
+
+(defn sub-bindings
+  [bindings]
+  (->> bindings
+       power
+       (filter not-empty)
+       (map (partial into #{}))))
+
 (defn group-join-patterns
   [rule]
   (let [jbs (->> (join-graph-components rule)
@@ -219,10 +229,21 @@
                          (let [pbs (->> jb
                                         (filter #(= :pattern (:type %)))
                                         vec)
-                               vars (apply set/union (map :vars pbs))]
+                               var-sets (->> pbs (mapv :vars))
+                               vars (if (= 1 (count var-sets))
+                                      (set var-sets)
+                                      (->> (for [i1 (-> var-sets count range)
+                                                 i2 (-> var-sets count range)]
+                                             (if (not= i1 i2)
+                                               (set/intersection (var-sets i1) (var-sets i2))
+                                               #{}))
+                                           (apply set/union)
+                                           sub-bindings))]
                            {:vars            vars
+                            :min-beta-level (apply min (map count vars))
+                            :max-beta-level (apply max (map count vars))
                             :pattern-binders pbs
-                            :bindings        #{}}))))]
+                            :bindings        {}}))))]
     (-> rule
         (assoc :joined-binders jbs)
         (dissoc :pattern-binders))))
@@ -242,14 +263,17 @@
    :pending-tx-data #{}})
 
 (defn merge-bindings
-  [pb {fact-pattern :clause fact-binding :binding}]
-  (-> pb
-      (update :patterns conj fact-pattern)
-      (update :binding merge fact-binding)))
+  [pb {fact-pattern :patterns fact-binding :binding}]
+  (let [common-vars (set/intersection (-> fact-binding keys set) (-> pb :binding keys set))]
+    (if (= (select-keys fact-binding common-vars) (select-keys (:binding pb) common-vars))
+      (-> pb
+          (update :patterns set/union fact-pattern)
+          (update :binding merge fact-binding))
+      pb)))
 
 (defn unmerge-bindings
-  [pb {fact-pattern :clause fact-binding :binding}]
-  (let [patterns (disj (:patterns pb) fact-pattern)
+  [pb {fact-pattern :patterns fact-binding :binding}]
+  (let [patterns (set/difference (:patterns pb) fact-pattern)
         vars (->> patterns
                   (apply concat)
                   (filter symbol?)
@@ -257,37 +281,65 @@
     (assoc pb :patterns patterns
               :binding (select-keys (:binding pb) vars))))
 
+;;; Progressively join over larger subsets of joined vars
+
 (defn join-bindings
-  [joined-pattern-binder op {fact-pattern :clause fact-vars :vars fact-binding :binding :as pfb}]
-  (let [joined? (volatile! false)
-        pattern-filter (if (= :db/retract op)
-                         #(contains? (:patterns %) fact-pattern)
-                         #(not (contains? (:patterns %) fact-pattern)))
-        joined-bindings (->> (:bindings joined-pattern-binder)
-                             #_(filter pattern-filter)
-                             (mapv (fn [%]
-                                     (let [binding (:binding %)
-                                           join? (reduce (fn [j? fv]
-                                                           (if j?
-                                                             (let [fb (get fact-binding fv)]
-                                                               (and j? (or (nil? fb) (= fb (get binding fv)))))
-                                                             j?))
-                                                         true fact-vars)]
-                                       (vswap! joined? #(or join? %))
-                                       (if join?
-                                         (if (= op :db/retract)
-                                           (unmerge-bindings % pfb)
-                                           (merge-bindings % pfb))
-                                         %))))
-                             (filter (comp not-empty :patterns))
-                             set)]
-    (if @joined?
-      (assoc joined-pattern-binder :bindings joined-bindings)
-      (update joined-pattern-binder :bindings conj {:patterns #{fact-pattern} :binding fact-binding}))))
+  [joined-pattern-binder op {binding-patterns :patterns binding :binding :as pfb} beta-level]
+  #_(println "*****" beta-level op binding-patterns binding)
+  (if (>  beta-level (:max-beta-level joined-pattern-binder))
+    joined-pattern-binder
+    (let [join-vars (filter #(= beta-level (count %)) (:vars joined-pattern-binder))
+          fact-join-bindings (->> join-vars
+                                  (map (partial select-keys binding))
+                                  (filter #(= beta-level (count %)))
+                                  set)
+          #_#__ (println "FJB" join-vars fact-join-bindings)
+          joined-bindings (select-keys (:bindings joined-pattern-binder) fact-join-bindings)
+          #_#__ (println "JOINED" joined-bindings)
+          new-bindings (->> (set/difference fact-join-bindings (-> joined-bindings keys))
+                            (map (fn [b] [b #{{:patterns binding-patterns :binding binding}}]))
+                            (into {}))
+          pattern-filter (if (= op :db/retract)
+                           #(set/subset? binding-patterns (:patterns %))
+                           #(not (set/subset? binding-patterns (:patterns %))))
+          updated-joined-bindings (->> joined-bindings
+                                       (map (fn [[jb bs]]
+                                              (let [grouped-bs (group-by pattern-filter bs)
+                                                    merged (->> (grouped-bs true)
+                                                                (map #(if (= op :db/retract)
+                                                                        (unmerge-bindings % pfb)
+                                                                        (merge-bindings % pfb)))
+                                                                set)
+                                                    joined (concat merged (grouped-bs false))
+                                                    updated (if (not= op :db/retract)
+                                                              (if (some (fn [{p :patterns b :binding}]
+                                                                          (and (set/subset? binding-patterns p)
+                                                                               (= (select-keys b (keys binding)) binding)))
+                                                                        joined)
+                                                                joined
+                                                                (conj joined {:patterns binding-patterns
+                                                                              :binding  binding}))
+                                                              joined)]
+                                                [jb (->> updated
+                                                         (filter (comp not-empty :patterns))
+                                                         set)])))
+                                       (remove (comp empty? second))
+                                       (into {}))
+          #_#__ (println "UPDATE" updated-joined-bindings)
+          joined-pattern-binder (reduce (fn [jpb b]
+                                          (join-bindings jpb op b (inc beta-level)))
+                                        joined-pattern-binder (apply set/union (vals updated-joined-bindings)))
+          changed-bindings (merge updated-joined-bindings (if (= op :db/retract) {} new-bindings))
+          updated-bindings (let [jbs (apply dissoc (:bindings joined-pattern-binder) (keys joined-bindings))]
+                             (merge jbs changed-bindings))]
+      (assoc joined-pattern-binder :bindings updated-bindings))))
 
 (defn update-pattern-bindings
-  [op joined-pattern-binder pattern-fact-binding]
-  (let [joined-pattern-binder (join-bindings joined-pattern-binder op pattern-fact-binding)]
+  [op joined-pattern-binder {fact-pattern :clause fact-binding :binding}]
+  (let [joined-pattern-binder (join-bindings joined-pattern-binder
+                                             op
+                                             {:patterns #{fact-pattern} :binding fact-binding}
+                                             (:min-beta-level joined-pattern-binder))]
     joined-pattern-binder))
 
 (defn cross-join
@@ -308,6 +360,7 @@
   [fact path-binders]
   (let [f (subvec fact 1)
         pattern-fact-bindings (mapv (partial bind-patterns f) (map :pattern-binders (:joined-binders path-binders)))]
+    #_(println "FACT" fact #_pattern-fact-bindings)
     (if (not-empty pattern-fact-bindings)
       (let [op (first fact)
             updated-joined-binders (mapv (fn [jpb pfbs]
@@ -336,6 +389,9 @@
                                                             (map :clause)
                                                             set)]
                                   (->> (:bindings joined-pattern-binder)
+                                       (filter (fn [[k _]] (= (:max-beta-level joined-pattern-binder) (count k))))
+                                       (map val)
+                                       (apply concat)
                                        (filter #(and (empty? (set/difference patterns (:patterns %)))
                                                      (empty? (set/intersection negated-patterns (:patterns %)))))
                                        (map :binding)
@@ -368,7 +424,7 @@
 
 (defn run-rule
   [facts rule]
-  (println "*******" (:name rule) #_facts)
+  #_(println "---------" (:name rule) #_facts)
   (let [updated-path-binders (reduce (fn [path-binders fact]
                                        (mapv (partial update-path-binders fact) path-binders))
                                      (:path-binders rule) facts)
@@ -424,70 +480,72 @@
     (reduce set/union #{} (map path-bindings (:path-binders rule)))))
 
 (defrules rs
-  [[::r1
-    [:find ?e
-     :where
-     [?e :a ?v]
-     [(= 1 ?v)]]
-    =>
-    [[:db/add ?e :one true]]]
+  [#_[::r1
+      [:find ?e
+       :where
+       [?e :a ?v]
+       [(= 1 ?v)]]
+      =>
+      [[:db/add ?e :one true]]]
 
-   [::r2
-    [:find ?e ?v
-     :where
-     [?e :a ?v]
-     [?e :one true]]
-    =>
-    [[:db/add ?e :foo :bar]]
-    #_(println "R2" ?e ?v)]
+   #_[::r2
+      [:find ?e ?v
+       :where
+       [?e :a ?v]
+       [?e :one true]]
+      =>
+      [[:db/add ?e :foo :bar]]
+      #_(println "R2" ?e ?v)]
 
-   [::r3
-    [:find ?e ?x ?z
-     :where
-     [?e :a ?v]
-     [(+ ?x 2) ?z]
-     [(* ?v 0.3) ?x]]
-    =>
-    #_(println "R3" ?x ?z)
-    [[:db/add ?e :x ?x]]]
+   #_[::r3
+      [:find ?e ?x ?z
+       :where
+       [?e :a ?v]
+       [(+ ?x 2) ?z]
+       [(* ?v 0.3) ?x]]
+      =>
+      #_(println "R3" ?x ?z)
+      [[:db/add ?e :x ?x]]]
 
-   [::r4
-    [:find ?e1 ?v2
-     :where
-     [?e1 :a _]
-     [_ :a ?v2]
-     #_[_ :b ?v2]
-     #_[(identity ?v2) ?q]
-     #_[(inc ?v2) ?q]
-     #_[?e1 :a ?q]]
-    =>
-    [[:db/add ?e1 :foo :bar]]
-    #_(println "R4" ?e1 ?v2)]
+   #_[::r4
+      [:find ?e1 ?v2
+       :where
+       [?e1 :a _]
+       [_ :a ?v2]
+       #_[_ :b ?v2]
+       #_[(identity ?v2) ?q]
+       #_[(inc ?v2) ?q]
+       #_[?e1 :a ?q]]
+      =>
+      [[:db/add ?e1 :foo :bar]]
+      #_(println "R4" ?e1 ?v2)]
 
    [::r5
     [:find ?e ?v ?w ?q
      :where
      [?e :a ?v]
+     #_[_ :a ?w]
      [?e :b ?w]
      [?e :c ?q]
+     #_[?e :a 1]
      (not [?e :c 1]
           [?e :d 2]
           [(> ?w 5)]
           #_[(identity ?e) ?e])
      (or [?e :a 1]
          (and [?e :a 2]
-              [?e :b 1]))]
+              [?e :b 2]))]
     =>
-    #_(println "R5" ?e ?v ?w ?q)
+    (println "R5" ?e ?v ?w ?q)
     [[:db/add ?e :foo :bar]]]
 
-   [::r6
-    [:find ?e
-     :where
-     [?e :b 1]
-     [1 :a 1]]
-    =>
-    (println "R6" ?e)]
+   #_[::r6
+      [:find ?e
+       :where
+       [?e :b 1]
+       [1 :a 1]]
+      =>
+      (println "R6" ?e)]
 
    [::q1
     [:find ?e ?v ?w ?q
