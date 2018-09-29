@@ -1,6 +1,6 @@
-(ns retescript.core-test
+(ns provisdom.retescript.core-test
   (:require [clojure.test :refer :all]
-            [retescript.core :refer :all]))
+            [provisdom.retescript.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."

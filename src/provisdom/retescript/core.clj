@@ -1,4 +1,4 @@
-(ns compute.retescript.core
+(ns provisdom.retescript.core
   (:require [datascript.core :as d]
             [datascript.parser :as dp]
             [datascript.query :as dq]
