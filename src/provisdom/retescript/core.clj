@@ -21,8 +21,12 @@
   [name rules]
   (let [cr (mapv compile-rule rules)]
     `(def ~name
-       {:rules ~cr
-        :db (d/db (d/create-conn))})))
+       ~cr)))
+
+(defn create-session
+  [schema & ruleses]
+  {:rules (->> ruleses (mapcat identity) vec)
+   :db (d/empty-db schema)})
 
 (defn update-bindings
   [{:keys [query rhs-fn bindings] :as rule} db]
