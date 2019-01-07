@@ -86,7 +86,6 @@
 (def s (create-session {:a {:db/cardinality :db.cardinality/many}} rs))
 
 (comment
-  (transact-datom s [:db/add 1 :a 1])
   (def s' (transact s [[:db/add 1 :a 2][:db/add 1 :a 1]]))
   (transact s' [[:db/retract 1 :a 1]])
   :end)

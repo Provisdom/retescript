@@ -29,7 +29,7 @@
    :db (d/empty-db schema)})
 
 (defn update-bindings
-  [{:keys [query rhs-fn bindings] :as rule} db]
+  [{:keys [query rhs-fn bindings]} db]
   (let [current-results (d/q query db)
         old-results (-> bindings keys set)
         added-results (set/difference current-results old-results)
@@ -52,25 +52,19 @@
     [(merge added-bindings (apply dissoc bindings retracted-results))
      (set/union added-datoms retracted-datoms)]))
 
-(defn transact-datom
-  [{:keys [rules db] :as session} datom]
-  (let [db' (d/db-with db [datom])]
-    (reduce (fn [[rs ds'] rule]
-              (let [[bs ds] (update-bindings rule db')]
-                [(update rs :rules conj (assoc rule :bindings bs)) (set/union ds' ds)]))
-            [(assoc session :db db' :rules []) #{}] rules)))
-
 (defn transact
   ; TODO - check tx-data is vector of datoms?
   [session tx-data]
-  (loop [session session
-         datoms tx-data]
-    (if (not-empty datoms)
-      (let [[session' new-datoms] (reduce (fn [[rs ds] d]
-                                            (let [[rs' ds'] (transact-datom rs d)]
-                                              [rs' (concat ds ds')]))
-                                          [session #{}] datoms)]
-        (recur session' new-datoms))
+  (loop [{:keys [rules db] :as session} session
+         tx-data tx-data]
+    (println tx-data db)
+    (if (not-empty tx-data)
+      (let [db' (d/db-with db tx-data)
+            [session' new-datoms] (reduce (fn [[rs ds'] rule]
+                                            (let [[bs ds] (update-bindings rule db')]
+                                              [(update rs :rules conj (assoc rule :bindings bs)) (set/union ds' ds)]))
+                                          [(assoc session :db db' :rules []) #{}] rules)]
+        (recur session' (vec new-datoms)))
       session)))
 
 
