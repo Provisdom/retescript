@@ -4,16 +4,20 @@
             [clojure.set :as set]
             [clojure.pprint :refer [pprint]]))
 
+(defn find-symbol
+  [element]
+  (or (:symbol element) (-> element :args first :symbol)))
+
 (defn compile-rule
   [rule-def]
-  (let [[name query _ & rhs] rule-def
+  (let [[name query _ rhs-fn] rule-def
         query-ast (dp/parse-query query)
-        rhs-args (->> query-ast :qfind :elements (mapv :symbol))
-        rhs-fn `(fn [~@rhs-args]
-                  ~@rhs)]
+        #_#_rhs-args (->> query-ast :qfind :elements (mapv find-symbol))
+        #_#_rhs-fn `(fn [~@rhs-args]
+                      ~@rhs)]
     {:name     name
      :query    `'~query
-     :rhs-args `'~rhs-args
+     #_#_:rhs-args `'~rhs-args
      :rhs-fn   rhs-fn
      :bindings {}}))
 
@@ -30,7 +34,7 @@
 
 (defn update-bindings
   [{:keys [query rhs-fn bindings]} db]
-  (let [current-results (d/q query db)
+  (let [current-results (set (d/q query db))
         old-results (-> bindings keys set)
         added-results (set/difference current-results old-results)
         retracted-results (set/difference old-results current-results)

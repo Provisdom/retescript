@@ -8,7 +8,8 @@
              [?e :a ?v]
              [(= 1 ?v)]]
             =>
-            [[:db/add ?e :one true]]]
+            (fn [?e]
+              [[:db/add ?e :one true]])]
 
            [::r2
             [:find ?e ?v
@@ -16,8 +17,17 @@
              [?e :a ?v]
              [?e :one true]]
             =>
-            [[:db/add ?e :foo :bar]]
-            #_(println "R2" ?e ?v)]
+            (fn [?e ?v]
+              (println "R2" ?e ?v)
+              [[:db/add ?e :foo :bar]])]
+
+           [::r-distinct
+            [:find ?e (distinct ?v)
+             :where
+             [?e :a ?v]]
+            =>
+            (fn [?e ?v]
+              (println ?e ?v))]
 
            #_#_#_#_#_[::r3
                       [:find ?e ?x ?z
@@ -83,9 +93,11 @@
                  (and [?e :a 2]
                       [?e :b 1]))]]])
 
-(def s (create-session {:a {:db/cardinality :db.cardinality/many}} rs))
+(def s (create-session {:a {:db/cardinality :db.cardinality/many}
+                        :b {:db/valueType :db.type/ref}} rs))
 
 (comment
   (def s' (transact s [[:db/add 1 :a 2][:db/add 1 :a 1]]))
   (transact s' [[:db/retract 1 :a 1]])
+  (def x' (transact s [{:a 1 :b {:a 2}}]))
   :end)
