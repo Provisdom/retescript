@@ -94,10 +94,13 @@
                       [?e :b 1]))]]])
 
 (def s (create-session {:a {:db/cardinality :db.cardinality/many}
-                        :b {:db/valueType :db.type/ref}} rs))
+                        :b {:db/valueType :db.type/ref
+                            :db/cardinality :db.cardinality/many}} rs))
 
 (comment
   (def s' (transact s [[:db/add 1 :a 2][:db/add 1 :a 1]]))
   (transact s' [[:db/retract 1 :a 1]])
   (def x' (transact s [{:a 1 :b {:a 2}}]))
+  (transact x' [{:db/id 1 :b {:a 3}}])
+  (transact x' [[:db/retract 1 :a 1]])
   :end)

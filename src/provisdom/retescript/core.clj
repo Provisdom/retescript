@@ -1,6 +1,7 @@
 (ns provisdom.retescript.core
   (:require [datascript.core :as d]
             [datascript.parser :as dp]
+            [datascript.db :as db]
             [clojure.set :as set]
             [clojure.pprint :refer [pprint]]))
 
@@ -30,49 +31,49 @@
 (defn create-session
   [schema & ruleses]
   {:rules (->> ruleses (mapcat identity) vec)
-   :db (d/empty-db schema)})
+   :db    (d/empty-db schema)})
 
 (defn update-bindings
-  [{:keys [query rhs-fn bindings]} db]
+  [{:keys [query rhs-fn bindings] :as rule} db]
   (let [current-results (set (d/q query db))
         old-results (-> bindings keys set)
         added-results (set/difference current-results old-results)
         retracted-results (set/difference old-results current-results)
-        added-bindings (->> added-results
-                            (map (fn [b]
-                                   (->> b
-                                        (apply rhs-fn)
-                                        set
-                                        (vector b))))
-                            (into {}))
-        added-datoms (->> added-bindings
-                          (mapcat val)
-                          set)
-        retracted-datoms (->> (select-keys bindings retracted-results)
-                              (mapcat (fn [[_ ds]]
-                                        (->> ds
-                                             (map (fn [d] (assoc d 0 :db/retract))))))
-                              set)]
+        [db' added-bindings] (reduce (fn [[db bs] b]
+                                       (let [{db' :db-after tx-data :tx-data} (d/with db (apply rhs-fn b))]
+                                         [db' (assoc bs b (->> tx-data
+                                                               (filter (fn [{:keys [added]}] added))
+                                                               (map (fn [{:keys [e a v]}] [:db/add e a v]))
+                                                               set))]))
+                                     [db {}] added-results)
+        #_#_added-bindings (->> added-results
+                                (map (fn [b]
+                                       (->> b
+                                            (apply rhs-fn)
+                                            set
+                                            (vector b))))
+                                (into {}))
+        #_#_added-datoms (->> added-bindings
+                              (mapcat val)
+                              set)
+        db'' (->> (select-keys bindings retracted-results)
+                  (mapcat (fn [[_ ds]]
+                            (->> ds
+                                 (map (fn [d] (assoc d 0 :db/retract))))))
+                  (d/db-with db'))]
     [(merge added-bindings (apply dissoc bindings retracted-results))
-     (set/union added-datoms retracted-datoms)]))
+     db'']))
 
 (defn transact
   ; TODO - check tx-data is vector of datoms?
   [session tx-data]
-  (loop [{:keys [rules db] :as session} session
-         tx-data tx-data]
-    (println tx-data db)
-    (if (not-empty tx-data)
-      (let [db' (d/db-with db tx-data)
-            [session' new-datoms] (reduce (fn [[rs ds'] rule]
-                                            (let [[bs ds] (update-bindings rule db')]
-                                              [(update rs :rules conj (assoc rule :bindings bs)) (set/union ds' ds)]))
-                                          [(assoc session :db db' :rules []) #{}] rules)]
-        (recur session' (vec new-datoms)))
-      session)))
-
-
-
-
-
-
+  (loop [{:keys [rules] :as session} (update session :db d/db-with tx-data)]
+    (let [session' (reduce (fn [{:keys [db] :as rs} rule]
+                             (let [[bs db'] (update-bindings rule db)]
+                               (-> rs
+                                   (update :rules conj (assoc rule :bindings bs))
+                                   (assoc :db db'))))
+                           (assoc session :rules []) rules)]
+      (if (= (:db session) (:db session'))
+        session
+        (recur session')))))
