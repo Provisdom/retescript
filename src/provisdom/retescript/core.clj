@@ -12,7 +12,10 @@
 (defn compile-rule
   [rule-def]
   (let [[name query _ rhs-fn] rule-def
-        query-ast (dp/parse-query query)
+        query-ast (try
+                    (dp/parse-query query)
+                    (catch Exception e
+                      (throw (ex-info (.getMessage e) {:rule-def rule-def}))))
         #_#_rhs-args (->> query-ast :qfind :elements (mapv find-symbol))
         #_#_rhs-fn `(fn [~@rhs-args]
                       ~@rhs)]
