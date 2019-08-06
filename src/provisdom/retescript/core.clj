@@ -34,6 +34,16 @@
     (throw (ex-info "Rule RHS (:=>) fails spec" {:explain-data ex :rule-def rule-def})))
   rule-def)
 
+(defn eval-rule-form
+  [rule-form]
+  (-> rule-form
+      (update :name eval)
+      (update :query eval)
+      (as-> rf
+            (if (fn? (:=> rf))
+              rf
+              (update rf :=> eval)))))
+
 (defn compile-rule-form
   [rule-def]
   (let [[name query _ rhs-fn] rule-def
@@ -41,15 +51,15 @@
                    :query    (if (or (vector? query) (map? query)) `'~query query)
                    :rhs-form `'~rhs-fn
                    :=>       rhs-fn}]
-    (check-rule (eval rule-form))
+    (check-rule (eval-rule-form rule-form))
     rule-form))
 
 (defn compile-rule
   [rule-def]
   (-> rule-def
       compile-rule-form
-      (update :name eval)
-      (update :query eval)))
+      eval-rule-form))
+
 
 (defmacro defrule
   [name query _ =>]
