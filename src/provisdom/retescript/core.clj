@@ -22,6 +22,7 @@
     {:name     name
      :query    `'~query
      #_#_:rhs-args `'~rhs-args
+     :rhs-form `'~rhs-fn
      :rhs-fn   rhs-fn
      :bindings {}}))
 
@@ -37,18 +38,50 @@
    :db    (d/empty-db schema)})
 
 (defn update-bindings
-  [{:keys [query rhs-fn bindings] :as rule} db]
+  [{:keys [name query rhs-fn bindings] :as rule} db]
   (let [current-results (set (d/q query db))
         old-results (-> bindings keys set)
         added-results (set/difference current-results old-results)
         retracted-results (set/difference old-results current-results)
-        [db' added-bindings] (reduce (fn [[db bs] b]
-                                       (let [{db' :db-after tx-data :tx-data} (d/with db (apply rhs-fn b))]
-                                         [db' (assoc bs b (->> tx-data
-                                                               (filter (fn [{:keys [added]}] added))
-                                                               (map (fn [{:keys [e a v]}] [:db/add e a v]))
-                                                               set))]))
-                                     [db {}] added-results)
+        db' (->> (select-keys bindings retracted-results)
+                 (mapcat (fn [[_ ds]]
+                           (->> ds
+                                (map (fn [d] (assoc d 0 :db/retract))))))
+                 (d/db-with db))
+        [db'' added-bindings] (reduce (fn [[db bs] b]
+                                        (let [rhs-tx (try
+                                                       (apply rhs-fn b)
+                                                       (catch Exception e
+                                                         (throw (ex-info "Exception evaluating RHS"
+                                                                         {:rule (select-keys rule [:name :query :rhs-form])
+                                                                          :bindings b
+                                                                          :ex e}))))
+                                              split-unconditional (group-by #(= :db/add! (first %)) rhs-tx)
+                                              conditional-tx (split-unconditional false)
+                                              unconditional-tx (->> (split-unconditional true)
+                                                                    (mapv #(case (count %)
+                                                                             2 (second %)
+                                                                             4 (assoc % 0 :db/add))))
+                                              db' (try
+                                                    (d/db-with db unconditional-tx)
+                                                    (catch Exception e
+                                                      (throw (ex-info "Exception transacting RHS result"
+                                                                      {:rule (select-keys rule [:name :query :rhs-form])
+                                                                       :rhs-tx unconditional-tx
+                                                                       :ex e}))))
+                                              tx-report (try
+                                                          (d/with db' conditional-tx)
+                                                          (catch Exception e
+                                                            (throw (ex-info "Exception transacting RHS result"
+                                                                            {:rule (select-keys rule [:name :query :rhs-form])
+                                                                             :rhs-tx conditional-tx
+                                                                             :ex e}))))
+                                              {db'' :db-after tx-data :tx-data} tx-report]
+                                          [db'' (assoc bs b (->> tx-data
+                                                                 (filter (fn [{:keys [added]}] added))
+                                                                 (map (fn [{:keys [e a v]}] [:db/add e a v]))
+                                                                 set))]))
+                                      [db' {}] added-results)
         #_#_added-bindings (->> added-results
                                 (map (fn [b]
                                        (->> b
@@ -58,12 +91,14 @@
                                 (into {}))
         #_#_added-datoms (->> added-bindings
                               (mapcat val)
-                              set)
-        db'' (->> (select-keys bindings retracted-results)
-                  (mapcat (fn [[_ ds]]
-                            (->> ds
-                                 (map (fn [d] (assoc d 0 :db/retract))))))
-                  (d/db-with db'))]
+                              set)]
+    (when (or (not-empty added-results) (not-empty retracted-results))
+      (tap> {:tag ::update-bindings
+             :name name
+             :added-results added-results
+             :added-bindings added-bindings
+             :retracted-results retracted-results
+             :retracted-bindings (select-keys bindings retracted-results)}))
     [(merge added-bindings (apply dissoc bindings retracted-results))
      db'']))
 

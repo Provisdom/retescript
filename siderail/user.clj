@@ -9,7 +9,8 @@
              [(= 1 ?v)]]
             =>
             (fn [?e]
-              [[:db/add ?e :one true]])]
+              (println "?e" ?e)
+              (when (= 1 ?e) [[:db/add! ?e :one true]]))]
 
            [::r2
             [:find ?e ?v
@@ -98,7 +99,7 @@
                             :db/cardinality :db.cardinality/many}} rs))
 
 (comment
-  (def s' (transact s [[:db/add 1 :a 2][:db/add 1 :a 1]]))
+  (def s' (transact s [[:db/add 1 :a 2][:db/add 1 :a 1][:db/add 2 :a 1]]))
   (transact s' [[:db/retract 1 :a 1]])
   (def x' (transact s [{:a 1 :b {:a 2}}]))
   (transact x' [{:db/id 1 :b {:a 3}}])
