@@ -3,42 +3,63 @@
             [datascript.parser :as dp]
             [datascript.db :as db]
             [clojure.set :as set]
+            [clojure.spec.alpha :as s]
             [clojure.pprint :refer [pprint]]))
 
+(defn query-valid?
+  [query]
+  (pprint query)
+  (try
+    (dp/parse-query query)
+    (catch Exception e
+      false)))
+
+(s/def ::name (s/or :keyword keyword? :string string? :symbol symbol?))
+(s/def ::query query-valid?)
 (defn find-symbol
   [element]
   (or (:symbol element) (-> element :args first :symbol)))
+(s/def ::=> fn?)
+(s/def ::rule-def (s/keys :req-un [::name ::query ::=>]))
 
-(defn compile-rule
+(defn check-rule
+  [{:keys [query name =>] :as rule-def}]
+  (try
+    (dp/parse-query query)
+    (catch Exception e
+      (throw (ex-info (.getMessage e) {:rule-def rule-def}))))
+  (when-let [ex (s/explain-data ::name name)]
+    (throw (ex-info "Rule name fails spec" {:explain-data ex :rule-def rule-def})))
+  (when-let [ex (s/explain-data ::=> =>)]
+    (throw (ex-info "Rule RHS (:=>) fails spec" {:explain-data ex :rule-def rule-def})))
+  rule-def)
+
+(defn compile-rule-form
   [rule-def]
-  (let [[name query _ rhs-fn] rule-def
-        query-ast (try
-                    (dp/parse-query query)
-                    (catch Exception e
-                      (throw (ex-info (.getMessage e) {:rule-def rule-def}))))
-        #_#_rhs-args (->> query-ast :qfind :elements (mapv find-symbol))
-        #_#_rhs-fn `(fn [~@rhs-args]
-                      ~@rhs)]
-    {:name     name
-     :query    `'~query
-     #_#_:rhs-args `'~rhs-args
+  (let [[name query _ rhs-fn] rule-def]
+    {:name     `'~name
+     :query    (if (or (vector? query) (map? query)) `'~query query)
      :rhs-form `'~rhs-fn
-     :rhs-fn   rhs-fn
-     :bindings {}}))
+     :=>       rhs-fn}))
 
-(defmacro defrules
-  [name rules]
-  (let [cr (mapv compile-rule rules)]
+(defmacro defrule
+  [name query _ =>]
+  (let [rule-def (compile-rule-form [name query _ =>])]
+    (check-rule (eval rule-def))
     `(def ~name
-       ~cr)))
+       ~rule-def)))
 
 (defn create-session
   [schema & ruleses]
-  {:rules (->> ruleses (mapcat identity) vec)
+  {:rules (->> ruleses
+               (mapcat #(if (map? %) [%] %))
+               (map check-rule)
+               (map #(assoc % :bindings {}))
+               vec)
    :db    (d/empty-db schema)})
 
 (defn update-bindings
-  [{:keys [name query rhs-fn bindings] :as rule} db]
+  [{:keys [name query => bindings] :as rule} db]
   (let [current-results (set (d/q query db))
         old-results (-> bindings keys set)
         added-results (set/difference current-results old-results)
@@ -50,7 +71,7 @@
                  (d/db-with db))
         [db'' added-bindings] (reduce (fn [[db bs] b]
                                         (let [rhs-tx (try
-                                                       (apply rhs-fn b)
+                                                       (apply => b)
                                                        (catch Exception e
                                                          (throw (ex-info "Exception evaluating RHS"
                                                                          {:rule (select-keys rule [:name :query :rhs-form])
@@ -85,7 +106,7 @@
         #_#_added-bindings (->> added-results
                                 (map (fn [b]
                                        (->> b
-                                            (apply rhs-fn)
+                                            (apply =>)
                                             set
                                             (vector b))))
                                 (into {}))
