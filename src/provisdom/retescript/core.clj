@@ -36,11 +36,17 @@
 
 (defn compile-rule-form
   [rule-def]
-  (let [[name query _ rhs-fn] rule-def]
-    {:name     `'~name
-     :query    (if (or (vector? query) (map? query)) `'~query query)
-     :rhs-form `'~rhs-fn
-     :=>       rhs-fn}))
+  (let [[name query _ rhs-fn] rule-def
+        rule-form {:name     `'~name
+                   :query    (if (or (vector? query) (map? query)) `'~query query)
+                   :rhs-form `'~rhs-fn
+                   :=>       rhs-fn}]
+    (check-rule (eval rule-form))
+    rule-form))
+
+(defn compile-rule
+  [rule-def]
+  (eval (compile-rule-form rule-def)))
 
 (defmacro defrule
   [name query _ =>]

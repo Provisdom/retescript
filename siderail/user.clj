@@ -11,6 +11,18 @@
     (println "?e" ?e)
     (when (= 1 ?e) [[:db/add! ?e :one true]])))
 
+(def r1
+  (compile-rule
+    [::r1
+     '[:find ?e
+       :where
+       [?e :a ?v]
+       [(= 1 ?v)]]
+     :=>
+     (fn [?e]
+       (println "?e" ?e)
+       (when (= 1 ?e) [[:db/add! ?e :one true]]))]))
+
 (defrule r2
   '[:find ?e ?v
     :where
