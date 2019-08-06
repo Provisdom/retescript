@@ -46,7 +46,10 @@
 
 (defn compile-rule
   [rule-def]
-  (eval (compile-rule-form rule-def)))
+  (-> rule-def
+      compile-rule-form
+      (update :name eval)
+      (update :query eval)))
 
 (defmacro defrule
   [name query _ =>]
